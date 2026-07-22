@@ -1,0 +1,22 @@
+{
+  "name": "hyperlocal",
+  "private": true,
+  "version": "1.0.0",
+  "workspaces": [
+    "packages/shared",
+    "apps/api",
+    "apps/web",
+    "apps/mobile"
+  ],
+  "scripts": {
+    "shared:build": "npm run build -w @hl/shared",
+    "api:dev": "npm run start:dev -w @hl/api",
+    "api:test": "npm run test -w @hl/api",
+    "verify": "npm run shared:build && npm run typecheck -w @hl/api && npm run lint -w @hl/api && npm run test -w @hl/api",
+    "mobile:typecheck": "npm run typecheck -w @hl/mobile",
+    "mobile:lint": "npm run lint -w @hl/mobile"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

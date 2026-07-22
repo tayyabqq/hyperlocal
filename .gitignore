@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.next/
+.env
+.env.local
+*.pem
+keys-dev/
+ci-keys/
+coverage/
+.expo/
+tsconfig.tsbuildinfo

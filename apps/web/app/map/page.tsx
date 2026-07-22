@@ -1,0 +1,110 @@
+'use client';
+
+import { useCallback, useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import type { ListingSummary } from '@hl/shared';
+import { useAuth } from '@/context/AuthContext';
+import { fetchNearbyListings } from '@/lib/listings-client';
+import { MapView } from '@/components/MapView';
+import { ErrorNotice } from '@/components/ErrorNotice';
+
+const DEIRA_DUBAI = { latitude: 25.2697, longitude: 55.3095 };
+
+export default function MapPage() {
+  const router = useRouter();
+  const { status } = useAuth();
+  const [listings, setListings] = useState<ListingSummary[]>([]);
+  const [center, setCenter] = useState(DEIRA_DUBAI);
+  const [selected, setSelected] = useState<ListingSummary | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  const loadListings = useCallback(async (lat: number, lng: number) => {
+    setLoading(true);
+    try {
+      const result = await fetchNearbyListings(lat, lng);
+      setListings(result.listings);
+      setError(null);
+    } catch {
+      setError('Could not load nearby listings. Check your connection and try again.');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadListings(center.latitude, center.longitude);
+    // Deliberately only on mount + explicit center changes below — not on
+    // every render, since flying the map shouldn't itself refire the query.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (!navigator.geolocation) return;
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const next = { latitude: pos.coords.latitude, longitude: pos.coords.longitude };
+        setCenter(next);
+        void loadListings(next.latitude, next.longitude);
+      },
+      () => undefined, // silently keep the UAE default if permission is denied
+      { timeout: 5000 },
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleMarkerClick = useCallback((listing: ListingSummary) => setSelected(listing), []);
+
+  return (
+    <main className="relative h-screen w-screen">
+      <MapView listings={listings} center={center} onMarkerClick={handleMarkerClick} />
+
+      <div className="absolute left-4 right-4 top-4 flex items-center justify-between gap-3">
+        <div className="rounded-card bg-white px-4 py-2.5 shadow-sm">
+          <span className="font-display text-sm font-semibold text-ink">
+            {loading ? 'Loading…' : `${listings.length} nearby`}
+          </span>
+        </div>
+        <button
+          onClick={() => router.push(status === 'authenticated' ? '/listings/new' : '/login')}
+          className="rounded-card bg-amber px-5 py-2.5 text-sm font-semibold text-ink shadow-sm"
+        >
+          Post a listing
+        </button>
+      </div>
+
+      {error && (
+        <div className="absolute left-4 top-16 max-w-xs">
+          <ErrorNotice message={error} />
+        </div>
+      )}
+
+      {selected && (
+        <div className="absolute bottom-0 left-0 right-0 rounded-t-[20px] bg-white p-6 shadow-[0_-4px_20px_rgba(0,0,0,0.08)]">
+          <div className="mx-auto max-w-md">
+            <div className="mb-3 flex items-start justify-between">
+              <div>
+                <p className="font-display text-lg font-semibold text-ink">{selected.category}</p>
+                <p className="text-sm text-slate/70">{selected.locationLabel}</p>
+                <p className="text-xs text-slate/50">Posted by {selected.authorDisplayName}</p>
+              </div>
+              <p className="font-display text-lg font-semibold text-amber">
+                AED {selected.payAmountAed}
+              </p>
+            </div>
+            <p className="mb-4 text-sm text-slate">{selected.description}</p>
+            <div className="flex items-center justify-between text-xs text-slate/50">
+              <span>Posted {new Date(selected.createdAt).toLocaleDateString()}</span>
+              {selected.distanceMeters !== null && (
+                <span>{(selected.distanceMeters / 1000).toFixed(1)} km away</span>
+              )}
+            </div>
+            <button onClick={() => setSelected(null)} className="mt-4 w-full text-center text-sm text-slate/50">
+              Close
+            </button>
+          </div>
+        </div>
+      )}
+    </main>
+  );
+}
