@@ -5,7 +5,9 @@ services:
       POSTGRES_USER: hl
       POSTGRES_PASSWORD: hl
       POSTGRES_DB: hl
-    ports: ['5432:5432']
+    # Host port is overridable because a locally-installed Postgres on 5432
+    # silently wins the bind and produces confusing auth failures.
+    ports: ['${POSTGRES_PORT:-5432}:5432']
     volumes: ['pgdata:/var/lib/postgresql/data']
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U hl']
@@ -13,7 +15,7 @@ services:
       retries: 10
   redis:
     image: redis:7-alpine
-    ports: ['6379:6379']
+    ports: ['${REDIS_PORT:-6379}:6379']
     healthcheck:
       test: ['CMD', 'redis-cli', 'ping']
       interval: 5s

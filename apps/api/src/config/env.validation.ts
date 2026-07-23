@@ -40,6 +40,41 @@ class Env {
   @IsOptional()
   @IsString()
   CORS_ORIGINS?: string;
+
+  @IsIn(['manual', 'paytabs'])
+  PAYMENT_GATEWAY!: string;
+
+  /** Where the gateway sends the user once the hosted page is done. */
+  @IsString()
+  PAYMENT_RETURN_URL!: string;
+
+  @IsOptional()
+  @IsString()
+  PAYMENT_CALLBACK_URL?: string;
+
+  @IsOptional()
+  @IsString()
+  PAYTABS_BASE_URL?: string;
+
+  @IsOptional()
+  @IsString()
+  PAYTABS_PROFILE_ID?: string;
+
+  @IsOptional()
+  @IsString()
+  PAYTABS_SERVER_KEY?: string;
+
+  /** Public origin of this API; the sandbox gateway builds its redirect from it. */
+  @IsOptional()
+  @IsString()
+  API_PUBLIC_URL?: string;
+
+  /** Free listings granted to a user on their first post. 0 disables the launch offer. */
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(50)
+  LAUNCH_FREE_LISTING_CREDITS?: number;
 }
 
 /** Fails fast at boot rather than at first request. */
@@ -64,6 +99,28 @@ export function validateEnv(raw: Record<string, unknown>): Env {
     if (missing.length > 0) {
       throw new Error(`OTP_PROVIDER=whatsapp requires: ${missing.join(', ')}`);
     }
+  }
+
+  // The manual gateway settles orders without taking money. Booting with it in
+  // production would make every listing free, so it is refused outright.
+  if (parsed.NODE_ENV === 'production' && parsed.PAYMENT_GATEWAY === 'manual') {
+    throw new Error('PAYMENT_GATEWAY=manual is not permitted when NODE_ENV=production');
+  }
+  if (parsed.PAYMENT_GATEWAY === 'paytabs') {
+    const missing = (
+      [
+        'PAYTABS_BASE_URL',
+        'PAYTABS_PROFILE_ID',
+        'PAYTABS_SERVER_KEY',
+        'PAYMENT_CALLBACK_URL',
+      ] as const
+    ).filter((k) => !parsed[k]);
+    if (missing.length > 0) {
+      throw new Error(`PAYMENT_GATEWAY=paytabs requires: ${missing.join(', ')}`);
+    }
+  }
+  if (parsed.PAYMENT_GATEWAY === 'manual' && !parsed.API_PUBLIC_URL) {
+    throw new Error('PAYMENT_GATEWAY=manual requires: API_PUBLIC_URL');
   }
 
   return parsed;

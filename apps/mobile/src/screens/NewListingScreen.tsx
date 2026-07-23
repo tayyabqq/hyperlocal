@@ -2,11 +2,14 @@ import React, { useEffect, useState } from 'react';
 import { ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import Mapbox from '@rnmapbox/maps';
 import * as Location from 'expo-location';
+import * as WebBrowser from 'expo-web-browser';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { CreateListingRequest } from '@hl/shared';
+import { formatAed, LISTING_FEE_FILS } from '@hl/shared';
 import type { RootStackParamList } from '../navigation/types';
 import { useAuth } from '../context/AuthContext';
 import { createListing } from '../api/listings';
+import { fetchCredits } from '../api/payments';
 import { ApiError } from '../api/client';
 import { Button } from '../components/Button';
 import { ErrorNotice } from '../components/ErrorNotice';
@@ -26,6 +29,7 @@ export function NewListingScreen({ navigation }: Props) {
   const [description, setDescription] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [credits, setCredits] = useState<number | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -35,6 +39,15 @@ export function NewListingScreen({ navigation }: Props) {
       setPin([position.coords.longitude, position.coords.latitude]);
     })();
   }, []);
+
+  // Drives the fee copy under the form. A failure here is not worth blocking
+  // the form for — the wording just falls back to the standard fee.
+  useEffect(() => {
+    if (accessToken === null) return;
+    fetchCredits(accessToken)
+      .then((balance) => setCredits(balance.credits))
+      .catch(() => setCredits(null));
+  }, [accessToken]);
 
   async function onSubmit() {
     if (accessToken === null) return;
@@ -49,14 +62,22 @@ export function NewListingScreen({ navigation }: Props) {
         longitude: pin[0],
         locationLabel: locationLabel.trim(),
       };
-      await createListing(accessToken, payload);
-      navigation.navigate('Map');
+      const { order } = await createListing(accessToken, payload);
+
+      // A card order opens the gateway's own page; a credit order is already
+      // settled and goes straight to the confirmation screen.
+      if (order.redirectUrl !== null) {
+        await WebBrowser.openBrowserAsync(order.redirectUrl);
+      }
+      navigation.replace('PaymentPending', { orderId: order.id });
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not post your listing.');
     } finally {
       setBusy(false);
     }
   }
+
+  const hasCredit = credits !== null && credits > 0;
 
   const canSubmit =
     category.trim().length >= 2 &&
@@ -128,7 +149,18 @@ export function NewListingScreen({ navigation }: Props) {
           maxLength={500}
         />
 
-        <Button title="Post listing" onPress={onSubmit} loading={busy} disabled={!canSubmit} />
+        <Text style={styles.feeNotice}>
+          {hasCredit
+            ? `Free — you have ${credits} listing credit${credits > 1 ? 's' : ''} left.`
+            : `${formatAed(LISTING_FEE_FILS)} to post. Your listing goes live as soon as payment clears.`}
+        </Text>
+
+        <Button
+          title={hasCredit ? 'Post listing' : `Pay ${formatAed(LISTING_FEE_FILS)} and post`}
+          onPress={onSubmit}
+          loading={busy}
+          disabled={!canSubmit}
+        />
       </ScrollView>
     </View>
   );
@@ -166,4 +198,5 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
   textArea: { minHeight: 90, textAlignVertical: 'top', paddingTop: 14 },
+  feeNotice: { fontSize: 13, lineHeight: 19, color: `${colors.slate}B3`, marginBottom: 14 },
 });

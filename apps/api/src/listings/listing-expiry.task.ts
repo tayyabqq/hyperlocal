@@ -21,4 +21,21 @@ export class ListingExpiryTask {
       this.logger.error('Listing expiry sweep failed', error instanceof Error ? error.stack : String(error));
     }
   }
+
+  /**
+   * Drafts whose payment was never completed. Hourly rather than every five
+   * minutes because nothing is user-visible either way — these listings are
+   * already invisible; this only stops them accumulating.
+   */
+  @Cron(CronExpression.EVERY_HOUR)
+  async sweepDrafts(): Promise<void> {
+    try {
+      await this.listings.sweepAbandonedDrafts();
+    } catch (error) {
+      this.logger.error(
+        'Abandoned draft sweep failed',
+        error instanceof Error ? error.stack : String(error),
+      );
+    }
+  }
 }

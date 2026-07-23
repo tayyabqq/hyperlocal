@@ -1,11 +1,13 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
-import { ListingsService } from '../src/listings/listings.service';
+import { PaymentMethod, PaymentOrderStatus } from '@hl/shared';
+import { ListingsService, type ListingAuthor } from '../src/listings/listings.service';
 import { DB } from '../src/db/db.module';
 import { REDIS } from '../src/redis/redis.module';
+import { LISTING_PAYMENT_PORT } from '../src/common/ports/listing-payment.port';
 import { AnalyticsService } from '../src/analytics/analytics.service';
 
-/** Minimal thenable stand-in for a Drizzle update-chain used by expireOverdueListings. */
+/** Minimal thenable stand-in for a Drizzle update-chain. */
 function updateChain(returning: unknown[]) {
   const chain: Record<string, unknown> = {
     set: () => chain,
@@ -23,9 +25,17 @@ describe('ListingsService', () => {
   let redisSet: jest.Mock;
   let redisKeys: jest.Mock;
   let redisDel: jest.Mock;
+  let chargeForListing: jest.Mock;
   let track: jest.Mock;
 
   const dubai = { latitude: 25.2582, longitude: 55.3047 }; // Deira
+
+  const author: ListingAuthor = {
+    id: 'user-1',
+    role: 'PROVIDER' as never,
+    displayName: 'Rashid',
+    phoneE164: '+971500000001',
+  };
 
   const validDto = {
     category: 'Warehouse helper',
@@ -36,20 +46,56 @@ describe('ListingsService', () => {
     locationLabel: 'Al Murar, Deira',
   };
 
+  function listingRow(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'listing-1',
+      authorId: 'user-1',
+      authorRole: 'PROVIDER',
+      authorDisplayName: 'Rashid',
+      category: validDto.category,
+      payAmountAed: validDto.payAmountAed,
+      description: validDto.description,
+      latitude: validDto.latitude,
+      longitude: validDto.longitude,
+      locationLabel: validDto.locationLabel,
+      status: 'ACTIVE',
+      createdAt: new Date(),
+      activatedAt: new Date(),
+      expiresAt: new Date(Date.now() + 7 * 86_400_000),
+      distanceMeters: null,
+      ...overrides,
+    };
+  }
+
+  const pendingCharge = {
+    orderId: 'order-1',
+    status: PaymentOrderStatus.PENDING,
+    amountFils: 1000,
+    method: PaymentMethod.CARD,
+    redirectUrl: 'https://pay.example/hosted/abc',
+    createdAt: new Date(),
+    paidAt: null,
+  };
+
   beforeEach(async () => {
     execute = jest.fn();
-    dbUpdate = jest.fn();
+    dbUpdate = jest.fn().mockReturnValue(updateChain([]));
     redisGet = jest.fn().mockResolvedValue(null);
     redisSet = jest.fn().mockResolvedValue('OK');
     redisKeys = jest.fn().mockResolvedValue([]);
     redisDel = jest.fn().mockResolvedValue(0);
+    chargeForListing = jest.fn().mockResolvedValue(pendingCharge);
     track = jest.fn().mockResolvedValue(undefined);
 
     const moduleRef = await Test.createTestingModule({
       providers: [
         ListingsService,
         { provide: DB, useValue: { execute, update: dbUpdate } },
-        { provide: REDIS, useValue: { get: redisGet, set: redisSet, keys: redisKeys, del: redisDel } },
+        {
+          provide: REDIS,
+          useValue: { get: redisGet, set: redisSet, keys: redisKeys, del: redisDel },
+        },
+        { provide: LISTING_PAYMENT_PORT, useValue: { chargeForListing } },
         { provide: AnalyticsService, useValue: { track } },
       ],
     }).compile();
@@ -63,50 +109,57 @@ describe('ListingsService', () => {
     it('rejects coordinates outside the UAE before touching the database', async () => {
       const outsideUae = { ...validDto, latitude: 51.5072, longitude: -0.1276 }; // London
 
-      await expect(service.create('user-1', 'PROVIDER' as never, outsideUae)).rejects.toThrow(
-        BadRequestException,
-      );
+      await expect(service.create(author, outsideUae)).rejects.toThrow(BadRequestException);
       expect(execute).not.toHaveBeenCalled();
     });
 
-    it('inserts via raw SQL using ST_MakePoint and returns the created listing', async () => {
+    it('writes the listing as PENDING_PAYMENT and returns the hosted payment order', async () => {
       execute
         .mockResolvedValueOnce([{ id: 'listing-1' }]) // INSERT ... RETURNING id
-        .mockResolvedValueOnce([
-          {
-            id: 'listing-1',
-            authorId: 'user-1',
-            authorRole: 'PROVIDER',
-            authorDisplayName: 'Rashid',
-            category: validDto.category,
-            payAmountAed: validDto.payAmountAed,
-            description: validDto.description,
-            latitude: validDto.latitude,
-            longitude: validDto.longitude,
-            locationLabel: validDto.locationLabel,
-            status: 'ACTIVE',
-            createdAt: new Date(),
-            expiresAt: new Date(Date.now() + 7 * 86_400_000),
-            distanceMeters: null,
-          },
-        ]); // findById SELECT
+        .mockResolvedValueOnce([listingRow({ status: 'PENDING_PAYMENT', activatedAt: null, expiresAt: null })]);
 
-      const result = await service.create('user-1', 'PROVIDER' as never, validDto);
+      const result = await service.create(author, validDto);
 
-      expect(result.id).toBe('listing-1');
-      expect(result.status).toBe('ACTIVE');
-      expect(track).toHaveBeenCalledWith(
-        'listing_created',
-        'user-1',
-        expect.objectContaining({ category: validDto.category }),
+      expect(result.listing.status).toBe('PENDING_PAYMENT');
+      expect(result.order.redirectUrl).toBe(pendingCharge.redirectUrl);
+      expect(result.order.amountFils).toBe(1000);
+      expect(chargeForListing).toHaveBeenCalledWith(
+        expect.objectContaining({ listingId: 'listing-1', userId: 'user-1' }),
       );
-      // Cache invalidated on write so a browse immediately after create is fresh.
-      expect(redisKeys).toHaveBeenCalledWith('browse:*');
+      // Nothing is visible yet, so the browse cache must not be cleared here.
+      expect(redisKeys).not.toHaveBeenCalled();
+    });
+
+    it('returns an already-settled order when a free credit covered the listing', async () => {
+      chargeForListing.mockResolvedValueOnce({
+        ...pendingCharge,
+        status: PaymentOrderStatus.PAID,
+        amountFils: 0,
+        method: PaymentMethod.CREDIT,
+        redirectUrl: null,
+        paidAt: new Date(),
+      });
+      execute.mockResolvedValueOnce([{ id: 'listing-1' }]).mockResolvedValueOnce([listingRow()]);
+
+      const result = await service.create(author, validDto);
+
+      expect(result.order.method).toBe(PaymentMethod.CREDIT);
+      expect(result.order.redirectUrl).toBeNull();
+      expect(result.listing.status).toBe('ACTIVE');
+    });
+
+    it('discards the draft when no charge could be opened at all', async () => {
+      execute.mockResolvedValueOnce([{ id: 'listing-1' }]);
+      chargeForListing.mockRejectedValueOnce(new Error('gateway down'));
+
+      await expect(service.create(author, validDto)).rejects.toThrow('gateway down');
+      // The orphan draft is taken back down rather than left unpayable.
+      expect(dbUpdate).toHaveBeenCalled();
     });
 
     it('throws if the insert unexpectedly returns no row', async () => {
       execute.mockResolvedValueOnce([]);
-      await expect(service.create('user-1', 'PROVIDER' as never, validDto)).rejects.toThrow(
+      await expect(service.create(author, validDto)).rejects.toThrow(
         'Listing insert did not return an id',
       );
     });
@@ -124,24 +177,7 @@ describe('ListingsService', () => {
     });
 
     it('queries with ST_DWithin on a cache miss and populates the cache', async () => {
-      execute.mockResolvedValueOnce([
-        {
-          id: 'listing-1',
-          authorId: 'user-1',
-          authorRole: 'PROVIDER',
-          authorDisplayName: 'Rashid',
-          category: 'Warehouse helper',
-          payAmountAed: 120,
-          description: 'desc',
-          latitude: dubai.latitude,
-          longitude: dubai.longitude,
-          locationLabel: 'Al Murar, Deira',
-          status: 'ACTIVE',
-          createdAt: new Date(),
-          expiresAt: new Date(Date.now() + 86_400_000),
-          distanceMeters: 340.7,
-        },
-      ]);
+      execute.mockResolvedValueOnce([listingRow({ distanceMeters: 340.7 })]);
 
       const result = await service.browse(dubai.latitude, dubai.longitude, 2000);
 
@@ -171,6 +207,71 @@ describe('ListingsService', () => {
       execute.mockResolvedValueOnce([]);
       await expect(service.findById('missing', null)).rejects.toThrow(NotFoundException);
     });
+
+    it('hides an unpaid listing from everyone but its author', async () => {
+      execute.mockResolvedValueOnce([listingRow({ status: 'PENDING_PAYMENT' })]);
+
+      await expect(service.findById('listing-1', null, 'someone-else')).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+
+    it('shows an unpaid listing to its author so they can finish paying', async () => {
+      execute.mockResolvedValueOnce([listingRow({ status: 'PENDING_PAYMENT' })]);
+
+      const result = await service.findById('listing-1', null, 'user-1');
+
+      expect(result.status).toBe('PENDING_PAYMENT');
+    });
+  });
+
+  describe('onPaymentSettled', () => {
+    it('activates the listing and starts the 7-day clock from activation', async () => {
+      dbUpdate.mockReturnValue(updateChain([{ id: 'listing-1', authorId: 'user-1' }]));
+
+      await service.onPaymentSettled({
+        orderId: 'order-1',
+        listingId: 'listing-1',
+        userId: 'user-1',
+        amountFils: 1000,
+      });
+
+      expect(redisKeys).toHaveBeenCalledWith('browse:*');
+      expect(track).toHaveBeenCalledWith(
+        'listing_activated',
+        'user-1',
+        expect.objectContaining({ listingId: 'listing-1' }),
+      );
+    });
+
+    it('is a no-op when the listing is no longer pending, so replays cannot extend it', async () => {
+      dbUpdate.mockReturnValue(updateChain([]));
+
+      await service.onPaymentSettled({
+        orderId: 'order-1',
+        listingId: 'listing-1',
+        userId: 'user-1',
+        amountFils: 1000,
+      });
+
+      expect(redisKeys).not.toHaveBeenCalled();
+      expect(track).not.toHaveBeenCalled();
+    });
+
+    it('swallows database failures so a payments callback never fails on our side', async () => {
+      dbUpdate.mockImplementation(() => {
+        throw new Error('db unavailable');
+      });
+
+      await expect(
+        service.onPaymentSettled({
+          orderId: 'order-1',
+          listingId: 'listing-1',
+          userId: 'user-1',
+          amountFils: 1000,
+        }),
+      ).resolves.toBeUndefined();
+    });
   });
 
   describe('expireOverdueListings', () => {
@@ -190,6 +291,14 @@ describe('ListingsService', () => {
 
       expect(count).toBe(0);
       expect(redisKeys).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('sweepAbandonedDrafts', () => {
+    it('removes drafts whose payment was never completed', async () => {
+      dbUpdate.mockReturnValue(updateChain([{ id: 'listing-9' }]));
+
+      await expect(service.sweepAbandonedDrafts()).resolves.toBe(1);
     });
   });
 });

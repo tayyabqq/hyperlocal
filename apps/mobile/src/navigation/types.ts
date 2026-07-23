@@ -4,4 +4,5 @@ export type RootStackParamList = {
   Dashboard: undefined;
   Map: undefined;
   NewListing: undefined;
+  PaymentPending: { orderId: string };
 };

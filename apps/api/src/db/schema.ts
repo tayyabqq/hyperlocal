@@ -96,7 +96,12 @@ export type UserRow = typeof users.$inferSelect;
 export type OtpChallengeRow = typeof otpChallenges.$inferSelect;
 export type RefreshTokenRow = typeof refreshTokens.$inferSelect;
 
-export const listingStatus = pgEnum('listing_status', ['ACTIVE', 'EXPIRED', 'REMOVED']);
+export const listingStatus = pgEnum('listing_status', [
+  'PENDING_PAYMENT',
+  'ACTIVE',
+  'EXPIRED',
+  'REMOVED',
+]);
 
 /**
  * PostGIS geography(Point,4326), driven with raw SQL at the call sites
@@ -127,9 +132,15 @@ export const listings = pgTable(
     longitude: doublePrecision('longitude').notNull(),
     location: geographyPoint('location').notNull(),
     locationLabel: text('location_label').notNull(),
-    status: listingStatus('status').notNull().default('ACTIVE'),
+    status: listingStatus('status').notNull().default('PENDING_PAYMENT'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    /**
+     * The 7-day clock starts when the listing goes live, not when it is
+     * created — an author who takes ten minutes on the payment page should not
+     * lose ten minutes of visibility.
+     */
+    activatedAt: timestamp('activated_at', { withTimezone: true }),
+    expiresAt: timestamp('expires_at', { withTimezone: true }),
   },
   (t) => ({
     statusExpiryIdx: index('listings_status_expiry_idx').on(t.status, t.expiresAt),
@@ -140,3 +151,92 @@ export const listings = pgTable(
 );
 
 export type ListingRow = typeof listings.$inferSelect;
+
+export const paymentOrderStatus = pgEnum('payment_order_status', ['PENDING', 'PAID', 'FAILED']);
+export const paymentMethod = pgEnum('payment_method', ['CARD', 'CREDIT']);
+
+/**
+ * One row per attempt to pay for a listing. A listing may accumulate several
+ * (abandoned page, declined card) but the partial unique index below allows at
+ * most one PAID order per listing, so a duplicated webhook can never charge or
+ * activate twice.
+ *
+ * No card data is stored or ever transits this service — the gateway hosts the
+ * payment page, which is what keeps the platform out of PCI scope.
+ */
+export const paymentOrders = pgTable(
+  'payment_orders',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    listingId: uuid('listing_id')
+      .notNull()
+      .references(() => listings.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    /** AED minor units. Integer, because money must never be a float. */
+    amountFils: integer('amount_fils').notNull(),
+    currency: text('currency').notNull().default('AED'),
+    status: paymentOrderStatus('status').notNull().default('PENDING'),
+    method: paymentMethod('method').notNull(),
+    provider: text('provider').notNull(),
+    /** Our idempotency key, sent to the gateway and echoed back on the webhook. */
+    providerCartId: text('provider_cart_id').notNull(),
+    /** The gateway's own transaction reference, known only after it responds. */
+    providerRef: text('provider_ref'),
+    redirectUrl: text('redirect_url'),
+    failureReason: text('failure_reason'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    paidAt: timestamp('paid_at', { withTimezone: true }),
+  },
+  (t) => ({
+    cartIdx: uniqueIndex('payment_orders_cart_idx').on(t.providerCartId),
+    listingIdx: index('payment_orders_listing_idx').on(t.listingId),
+    userIdx: index('payment_orders_user_idx').on(t.userId),
+    onePaidPerListing: uniqueIndex('payment_orders_one_paid_per_listing_idx')
+      .on(t.listingId)
+      .where(sql`status = 'PAID'`),
+  }),
+);
+
+/**
+ * Append-only credit ledger: +1 when a credit is granted (launch seeding gives
+ * every early user their first listing free), −1 when one is spent. Balance is
+ * the sum. Append-only rather than a counter column so every free listing is
+ * traceable to the grant that funded it.
+ */
+export const listingCredits = pgTable(
+  'listing_credits',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    delta: integer('delta').notNull(),
+    reason: text('reason').notNull(),
+    listingId: uuid('listing_id').references(() => listings.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({ userIdx: index('listing_credits_user_idx').on(t.userId, t.createdAt) }),
+);
+
+/**
+ * Gateway callbacks are retried on any non-2xx, so the same event arrives more
+ * than once. The unique key makes replay a no-op instead of a double credit.
+ */
+export const webhookEvents = pgTable(
+  'webhook_events',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    provider: text('provider').notNull(),
+    providerEventId: text('provider_event_id').notNull(),
+    payload: jsonb('payload').notNull().default(sql`'{}'::jsonb`),
+    receivedAt: timestamp('received_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    identityIdx: uniqueIndex('webhook_events_identity_idx').on(t.provider, t.providerEventId),
+  }),
+);
+
+export type PaymentOrderRow = typeof paymentOrders.$inferSelect;
+export type ListingCreditRow = typeof listingCredits.$inferSelect;

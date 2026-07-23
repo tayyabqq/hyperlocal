@@ -2,9 +2,12 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import type { CreateListingRequest, ListingSummary } from '@hl/shared';
+import type { CreateListingRequest } from '@hl/shared';
+import { formatAed, LISTING_FEE_FILS } from '@hl/shared';
 import { useAuth } from '@/context/AuthContext';
-import { apiFetch, ApiError } from '@/lib/api-client';
+import { ApiError } from '@/lib/api-client';
+import { createListing } from '@/lib/listings-client';
+import { fetchCredits } from '@/lib/payments-client';
 import { Button } from '@/components/Button';
 import { Field, inputClass } from '@/components/Field';
 import { ErrorNotice } from '@/components/ErrorNotice';
@@ -24,10 +27,20 @@ export default function NewListingPage() {
   const [pin, setPin] = useState(DEIRA_DUBAI);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [credits, setCredits] = useState<number | null>(null);
 
   useEffect(() => {
     if (status === 'unauthenticated') router.replace('/login');
   }, [status, router]);
+
+  // Drives the fee copy below the form. A failure here is not worth blocking
+  // the form for — the wording just falls back to the standard fee.
+  useEffect(() => {
+    if (!accessToken) return;
+    fetchCredits(accessToken)
+      .then((balance) => setCredits(balance.credits))
+      .catch(() => setCredits(null));
+  }, [accessToken]);
 
   useEffect(() => {
     if (!navigator.geolocation) return;
@@ -52,14 +65,17 @@ export default function NewListingPage() {
         longitude: pin.longitude,
         locationLabel: locationLabel.trim(),
       };
-      await apiFetch<ListingSummary>('/v1/listings', accessToken, {
-        method: 'POST',
-        body: JSON.stringify(payload),
-      });
-      router.push('/map');
+      const { order } = await createListing(accessToken, payload);
+
+      // A card order sends the user to the gateway's own page; a credit order
+      // is already settled and only needs the confirmation screen.
+      if (order.redirectUrl) {
+        window.location.href = order.redirectUrl;
+        return; // navigating away — leaving `busy` set keeps the form locked
+      }
+      router.push(`/listings/pending?orderId=${order.id}`);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not post your listing.');
-    } finally {
       setBusy(false);
     }
   }
@@ -140,8 +156,15 @@ export default function NewListingPage() {
             </Field>
 
             <ErrorNotice message={error} />
+
+            <p className="text-sm text-slate/70">
+              {credits && credits > 0
+                ? `Free — you have ${credits} listing credit${credits > 1 ? 's' : ''} left.`
+                : `${formatAed(LISTING_FEE_FILS)} to post. Your listing goes live as soon as payment clears.`}
+            </p>
+
             <Button type="submit" loading={busy}>
-              Post listing
+              {credits && credits > 0 ? 'Post listing' : `Pay ${formatAed(LISTING_FEE_FILS)} and post`}
             </Button>
           </form>
         </div>

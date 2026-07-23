@@ -1,12 +1,21 @@
-import { BadRequestException, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { and, eq, gt, sql } from 'drizzle-orm';
+import {
+  BadRequestException,
+  Inject,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
+import { OnEvent } from '@nestjs/event-emitter';
+import { and, eq, gt, lt, sql } from 'drizzle-orm';
 import type Redis from 'ioredis';
 import {
   AnalyticsEvent,
   ErrorCode,
   ListingStatus,
   type BrowseListingsResult,
+  type CreateListingResult,
   type ListingSummary,
+  type PaymentOrderSummary,
   type UserRole,
 } from '@hl/shared';
 import { DB, type Database } from '../db/db.module';
@@ -14,6 +23,15 @@ import { listings, users } from '../db/schema';
 import { REDIS } from '../redis/redis.module';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { isWithinUae } from '../common/geo/uae-bounds';
+import {
+  LISTING_PAYMENT_PORT,
+  type ListingCharge,
+  type ListingPaymentPort,
+} from '../common/ports/listing-payment.port';
+import {
+  PaymentEvent,
+  type PaymentSettledEvent,
+} from '../common/events/payment.events';
 import type { CreateListingDto } from './dto/create-listing.dto';
 
 const LISTING_TTL_DAYS = 7;
@@ -23,6 +41,17 @@ const BROWSE_CACHE_TTL_SECONDS = 20;
 // ~110m grid at the equator — coarse enough to make nearby requests share a
 // cache entry, fine enough that "nearby" still means nearby.
 const CACHE_GRID_PRECISION = 3;
+// How long an unpaid listing may sit before it is swept. Long enough that a
+// user who abandons the payment page can still come back and finish it.
+const ABANDONED_DRAFT_TTL_HOURS = 24;
+
+/** Everything the payment gateway needs about the poster, without importing the auth types. */
+export interface ListingAuthor {
+  id: string;
+  role: UserRole;
+  displayName: string;
+  phoneE164: string;
+}
 
 interface ListingQueryRow {
   [key: string]: unknown;
@@ -37,9 +66,18 @@ interface ListingQueryRow {
   longitude: number;
   locationLabel: string;
   status: string;
-  createdAt: Date;
-  expiresAt: Date;
+  // Raw `db.execute` returns timestamps as strings, not Date objects, so these
+  // are coerced through `toIso` rather than dereferenced directly.
+  createdAt: string | Date;
+  activatedAt: string | Date | null;
+  expiresAt: string | Date | null;
   distanceMeters: number | null;
+}
+
+/** Timestamps come back from raw SQL as strings; the query builder gives Dates. Handle both. */
+function toIso(value: string | Date | null): string | null {
+  if (value === null) return null;
+  return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
 }
 
 @Injectable()
@@ -49,14 +87,17 @@ export class ListingsService {
   constructor(
     @Inject(DB) private readonly db: Database,
     @Inject(REDIS) private readonly redis: Redis,
+    @Inject(LISTING_PAYMENT_PORT) private readonly payments: ListingPaymentPort,
     private readonly analytics: AnalyticsService,
   ) {}
 
-  async create(
-    authorId: string,
-    authorRole: UserRole,
-    dto: CreateListingDto,
-  ): Promise<ListingSummary> {
+  /**
+   * Creates the listing in PENDING_PAYMENT and opens a charge for it. The
+   * listing is deliberately written before the charge so the order can
+   * reference it, and it stays invisible to browse until payment settles — the
+   * paid-intent gate the product is built around.
+   */
+  async create(author: ListingAuthor, dto: CreateListingDto): Promise<CreateListingResult> {
     if (!isWithinUae(dto.latitude, dto.longitude)) {
       throw new BadRequestException({
         errorCode: ErrorCode.LOCATION_OUT_OF_BOUNDS,
@@ -64,32 +105,62 @@ export class ListingsService {
       });
     }
 
-    const expiresAt = new Date(Date.now() + LISTING_TTL_DAYS * 86_400_000);
-
     // Geography column is set via ST_MakePoint/ST_SetSRID — Drizzle's insert
     // builder can't express that, so this one write goes through raw SQL.
     const rows = await this.db.execute<{ id: string }>(sql`
       INSERT INTO ${listings} (author_id, author_role, category, pay_amount_aed, description,
-        latitude, longitude, location, location_label, expires_at)
-      VALUES (${authorId}, ${authorRole}, ${dto.category}, ${dto.payAmountAed}, ${dto.description},
+        latitude, longitude, location, location_label, status)
+      VALUES (${author.id}, ${author.role}, ${dto.category}, ${dto.payAmountAed}, ${dto.description},
         ${dto.latitude}, ${dto.longitude},
         ST_SetSRID(ST_MakePoint(${dto.longitude}, ${dto.latitude}), 4326)::geography,
-        ${dto.locationLabel}, ${expiresAt})
+        ${dto.locationLabel}, 'PENDING_PAYMENT')
       RETURNING id
     `);
 
-    const insertedId = rows[0]?.id;
-    if (!insertedId) {
+    const listingId = rows[0]?.id;
+    if (!listingId) {
       throw new Error('Listing insert did not return an id');
     }
 
-    await this.invalidateBrowseCache();
-    await this.analytics.track(AnalyticsEvent.LISTING_CREATED, authorId, {
+    await this.analytics.track(AnalyticsEvent.LISTING_CREATED, author.id, {
       category: dto.category,
       payAmountAed: dto.payAmountAed,
     });
 
-    return this.findById(insertedId, null);
+    const charge = await this.chargeOrDiscard(listingId, author);
+
+    return {
+      // Re-read rather than reuse the pre-charge row: a credit settlement
+      // activates the listing synchronously, and the client must see that.
+      listing: await this.findById(listingId, null, author.id),
+      order: toOrderSummary(charge, listingId),
+    };
+  }
+
+  /** Re-opens payment for a listing the author started but never paid for. */
+  async startPaymentRetry(listingId: string, author: ListingAuthor): Promise<PaymentOrderSummary> {
+    const listing = await this.findById(listingId, null, author.id);
+
+    if (listing.authorId !== author.id) {
+      throw new NotFoundException({
+        errorCode: ErrorCode.LISTING_NOT_FOUND,
+        message: 'This listing no longer exists.',
+      });
+    }
+    if (listing.status !== ListingStatus.PENDING_PAYMENT) {
+      throw new BadRequestException({
+        errorCode: ErrorCode.PAYMENT_ALREADY_SETTLED,
+        message: 'This listing has already been paid for.',
+      });
+    }
+
+    const charge = await this.payments.chargeForListing({
+      userId: author.id,
+      listingId,
+      displayName: author.displayName,
+      phoneE164: author.phoneE164,
+    });
+    return toOrderSummary(charge, listingId);
   }
 
   async browse(
@@ -116,7 +187,8 @@ export class ListingsService {
         u.display_name AS "authorDisplayName",
         l.category, l.pay_amount_aed AS "payAmountAed", l.description,
         l.latitude, l.longitude, l.location_label AS "locationLabel",
-        l.status, l.created_at AS "createdAt", l.expires_at AS "expiresAt",
+        l.status, l.created_at AS "createdAt", l.activated_at AS "activatedAt",
+        l.expires_at AS "expiresAt",
         ST_Distance(l.location, ST_SetSRID(ST_MakePoint(${longitude}, ${latitude}), 4326)::geography) AS "distanceMeters"
       FROM ${listings} l
       JOIN ${users} u ON u.id = l.author_id
@@ -139,7 +211,30 @@ export class ListingsService {
     return result;
   }
 
-  async findById(id: string, viewerCoords: { latitude: number; longitude: number } | null): Promise<ListingSummary> {
+  /** The author's own listings, including unpaid ones so they can finish paying. */
+  async listMine(authorId: string): Promise<ListingSummary[]> {
+    const rows = await this.db.execute<ListingQueryRow>(sql`
+      SELECT
+        l.id, l.author_id AS "authorId", l.author_role AS "authorRole",
+        u.display_name AS "authorDisplayName",
+        l.category, l.pay_amount_aed AS "payAmountAed", l.description,
+        l.latitude, l.longitude, l.location_label AS "locationLabel",
+        l.status, l.created_at AS "createdAt", l.activated_at AS "activatedAt",
+        l.expires_at AS "expiresAt", NULL AS "distanceMeters"
+      FROM ${listings} l
+      JOIN ${users} u ON u.id = l.author_id
+      WHERE l.author_id = ${authorId} AND l.status <> 'REMOVED'
+      ORDER BY l.created_at DESC
+      LIMIT ${MAX_RESULTS}
+    `);
+    return rows.map((r) => this.rowToSummary(r));
+  }
+
+  async findById(
+    id: string,
+    viewerCoords: { latitude: number; longitude: number } | null,
+    viewerId: string | null = null,
+  ): Promise<ListingSummary> {
     const distanceExpr = viewerCoords
       ? sql`ST_Distance(l.location, ST_SetSRID(ST_MakePoint(${viewerCoords.longitude}, ${viewerCoords.latitude}), 4326)::geography)`
       : sql`NULL`;
@@ -150,7 +245,8 @@ export class ListingsService {
         u.display_name AS "authorDisplayName",
         l.category, l.pay_amount_aed AS "payAmountAed", l.description,
         l.latitude, l.longitude, l.location_label AS "locationLabel",
-        l.status, l.created_at AS "createdAt", l.expires_at AS "expiresAt",
+        l.status, l.created_at AS "createdAt", l.activated_at AS "activatedAt",
+        l.expires_at AS "expiresAt",
         ${distanceExpr} AS "distanceMeters"
       FROM ${listings} l
       JOIN ${users} u ON u.id = l.author_id
@@ -159,13 +255,51 @@ export class ListingsService {
     `);
 
     const row = rows[0];
-    if (!row) {
+    // An unpaid or removed listing is indistinguishable from a missing one to
+    // anyone but its author: no listing becomes visible without being paid for.
+    if (!row || (row.status !== 'ACTIVE' && row.authorId !== viewerId)) {
       throw new NotFoundException({
         errorCode: ErrorCode.LISTING_NOT_FOUND,
         message: 'This listing no longer exists.',
       });
     }
     return this.rowToSummary(row);
+  }
+
+  /**
+   * Payment settled — the listing goes live and its 7-day clock starts now.
+   * Guarded so a duplicated event cannot extend an already-live listing.
+   */
+  @OnEvent(PaymentEvent.SETTLED)
+  async onPaymentSettled(event: PaymentSettledEvent): Promise<void> {
+    try {
+      const activatedAt = new Date();
+      const [activated] = await this.db
+        .update(listings)
+        .set({
+          status: 'ACTIVE',
+          activatedAt,
+          expiresAt: new Date(activatedAt.getTime() + LISTING_TTL_DAYS * 86_400_000),
+        })
+        .where(and(eq(listings.id, event.listingId), eq(listings.status, 'PENDING_PAYMENT')))
+        .returning({ id: listings.id, authorId: listings.authorId });
+
+      if (!activated) return;
+
+      await this.invalidateBrowseCache();
+      await this.analytics.track(AnalyticsEvent.LISTING_ACTIVATED, activated.authorId, {
+        listingId: activated.id,
+        orderId: event.orderId,
+      });
+      this.logger.log(`Listing ${activated.id} activated by order ${event.orderId}.`);
+    } catch (error) {
+      // Payments has already taken the money; failing here must not throw back
+      // into the payments module, so it is logged for operator follow-up.
+      this.logger.error(
+        `Failed to activate listing ${event.listingId} after payment ${event.orderId}`,
+        error instanceof Error ? error.stack : String(error),
+      );
+    }
   }
 
   /** Runs on a schedule (see ListingExpiryTask) rather than filtering status at read time only, so an expired listing's status is durably correct for anyone querying it directly. */
@@ -181,6 +315,43 @@ export class ListingsService {
       this.logger.log(`Expired ${result.length} listing(s).`);
     }
     return result.length;
+  }
+
+  /** Clears drafts whose payment was never completed so they stop accumulating. */
+  async sweepAbandonedDrafts(): Promise<number> {
+    const cutoff = new Date(Date.now() - ABANDONED_DRAFT_TTL_HOURS * 3_600_000);
+    const result = await this.db
+      .update(listings)
+      .set({ status: 'REMOVED' })
+      .where(and(eq(listings.status, 'PENDING_PAYMENT'), lt(listings.createdAt, cutoff)))
+      .returning({ id: listings.id });
+
+    if (result.length > 0) {
+      this.logger.log(`Removed ${result.length} abandoned unpaid listing(s).`);
+    }
+    return result.length;
+  }
+
+  /**
+   * A listing nobody can pay for is dead weight on the map's integrity, so a
+   * charge that cannot even be opened takes the draft down with it rather than
+   * leaving an orphan the user can neither see nor complete.
+   */
+  private async chargeOrDiscard(listingId: string, author: ListingAuthor): Promise<ListingCharge> {
+    try {
+      return await this.payments.chargeForListing({
+        userId: author.id,
+        listingId,
+        displayName: author.displayName,
+        phoneE164: author.phoneE164,
+      });
+    } catch (error) {
+      await this.db
+        .update(listings)
+        .set({ status: 'REMOVED' })
+        .where(and(eq(listings.id, listingId), eq(listings.status, 'PENDING_PAYMENT')));
+      throw error;
+    }
   }
 
   private async invalidateBrowseCache(): Promise<void> {
@@ -209,8 +380,22 @@ export class ListingsService {
       locationLabel: row.locationLabel,
       status: row.status as ListingStatus,
       distanceMeters: row.distanceMeters !== null ? Math.round(row.distanceMeters) : null,
-      createdAt: row.createdAt.toISOString(),
-      expiresAt: row.expiresAt.toISOString(),
+      createdAt: toIso(row.createdAt) as string,
+      activatedAt: toIso(row.activatedAt),
+      expiresAt: toIso(row.expiresAt),
     };
   }
+}
+
+function toOrderSummary(charge: ListingCharge, listingId: string): PaymentOrderSummary {
+  return {
+    id: charge.orderId,
+    listingId,
+    status: charge.status,
+    amountFils: charge.amountFils,
+    method: charge.method,
+    redirectUrl: charge.redirectUrl,
+    createdAt: charge.createdAt.toISOString(),
+    paidAt: charge.paidAt?.toISOString() ?? null,
+  };
 }

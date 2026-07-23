@@ -7,7 +7,12 @@ import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create(AppModule, { logger: ['error', 'warn', 'log'] });
+  // rawBody is required to authenticate payment-gateway callbacks: the
+  // signature covers the exact bytes sent, which JSON re-serialisation loses.
+  const app = await NestFactory.create(AppModule, {
+    logger: ['error', 'warn', 'log'],
+    rawBody: true,
+  });
   const config = app.get(ConfigService);
 
   app.use(helmet());
