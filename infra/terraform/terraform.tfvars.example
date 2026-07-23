@@ -1,0 +1,8 @@
+# Copy to terraform.tfvars and fill in. Images come from CI (ECR push output).
+region              = "me-central-1"
+environment         = "prod"
+domain_name         = "worknearby.ae"
+api_domain_name     = "api.worknearby.ae"
+acm_certificate_arn = "arn:aws:acm:me-central-1:ACCOUNT_ID:certificate/CERT_ID"
+api_image           = "ACCOUNT_ID.dkr.ecr.me-central-1.amazonaws.com/hyperlocal/api:GIT_SHA"
+web_image           = "ACCOUNT_ID.dkr.ecr.me-central-1.amazonaws.com/hyperlocal/web:GIT_SHA"

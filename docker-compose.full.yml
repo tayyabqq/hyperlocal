@@ -1,0 +1,84 @@
+# Full local stack: infra + API + web, all containerised. Useful for verifying
+# the production images end-to-end before shipping.
+#
+#   docker compose -f docker-compose.full.yml up --build
+#
+# Requires JWT keys on disk first:  ./scripts/gen-jwt-keys.sh ./keys-dev
+# The API waits for a healthy database, then you run migrations once via:
+#   docker compose -f docker-compose.full.yml run --rm migrate
+
+services:
+  postgres:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_USER: hl
+      POSTGRES_PASSWORD: hl
+      POSTGRES_DB: hl
+    volumes: ['pgdata:/var/lib/postgresql/data']
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U hl']
+      interval: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      retries: 10
+
+  # One-shot migration runner. Uses the API image's toolchain via tsx.
+  migrate:
+    build: { context: ., dockerfile: apps/api/Dockerfile }
+    profiles: ['tools']
+    entrypoint: ['node']
+    command: ['dist/db/migrate.js']
+    environment:
+      DATABASE_URL: postgresql://hl:hl@postgres:5432/hl
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  api:
+    build: { context: ., dockerfile: apps/api/Dockerfile }
+    ports: ['3000:3000']
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: postgresql://hl:hl@postgres:5432/hl
+      REDIS_URL: redis://redis:6379
+      # Dev-shaped providers won't boot under NODE_ENV=production by design;
+      # this stack is for image validation, so set real provider creds here or
+      # flip NODE_ENV to development to use the console/manual providers.
+      OTP_PROVIDER: whatsapp
+      WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID:-changeme}
+      WHATSAPP_ACCESS_TOKEN: ${WHATSAPP_ACCESS_TOKEN:-changeme}
+      WHATSAPP_OTP_TEMPLATE_NAME: otp_login
+      PAYMENT_GATEWAY: paytabs
+      PAYMENT_RETURN_URL: http://localhost:3001/listings/pending
+      PAYMENT_CALLBACK_URL: http://localhost:3000/v1/payments/callback
+      PAYTABS_BASE_URL: https://secure.paytabs.com
+      PAYTABS_PROFILE_ID: ${PAYTABS_PROFILE_ID:-0}
+      PAYTABS_SERVER_KEY: ${PAYTABS_SERVER_KEY:-changeme}
+      PUSH_PROVIDER: fcm
+      FCM_PROJECT_ID: ${FCM_PROJECT_ID:-changeme}
+      FCM_SERVICE_ACCOUNT_JSON: ${FCM_SERVICE_ACCOUNT_JSON:-{}}
+      CORS_ORIGINS: http://localhost:3001
+      JWT_PRIVATE_KEY: ${JWT_PRIVATE_KEY}
+      JWT_PUBLIC_KEY: ${JWT_PUBLIC_KEY}
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        NEXT_PUBLIC_API_BASE_URL: http://localhost:3000
+        NEXT_PUBLIC_MAPBOX_TOKEN: ${NEXT_PUBLIC_MAPBOX_TOKEN:-pk.test}
+    ports: ['3001:3001']
+    depends_on:
+      - api
+
+volumes:
+  pgdata:

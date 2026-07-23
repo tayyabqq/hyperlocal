@@ -6,8 +6,12 @@ import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { RedisIoAdapter } from './chat/redis-io.adapter';
+import { initSentry } from './observability/sentry';
 
 async function bootstrap(): Promise<void> {
+  // Before the app is created so instrumentation wraps the HTTP layer.
+  initSentry();
+
   // rawBody is required to authenticate payment-gateway callbacks: the
   // signature covers the exact bytes sent, which JSON re-serialisation loses.
   const app = await NestFactory.create(AppModule, {

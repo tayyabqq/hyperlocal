@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { ErrorCode } from '@hl/shared';
+import { captureException } from '../../observability/sentry';
 
 /** Single JSON error shape for every failure so clients branch on errorCode. */
 @Catch()
@@ -45,6 +46,8 @@ export class HttpExceptionFilter implements ExceptionFilter {
         `${req.method} ${req.url} -> ${statusCode}`,
         exception instanceof Error ? exception.stack : String(exception),
       );
+      // Only unexpected server faults go to Sentry; 4xx are the client's problem.
+      captureException(exception);
     }
 
     res.status(statusCode).json({

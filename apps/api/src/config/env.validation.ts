@@ -94,6 +94,15 @@ class Env {
   @IsOptional()
   @IsString()
   FCM_SERVICE_ACCOUNT_JSON?: string;
+
+  /** Error tracking. Optional everywhere; when unset, Sentry stays uninitialised. */
+  @IsOptional()
+  @IsString()
+  SENTRY_DSN?: string;
+
+  @IsOptional()
+  @IsString()
+  APP_VERSION?: string;
 }
 
 /** Fails fast at boot rather than at first request. */

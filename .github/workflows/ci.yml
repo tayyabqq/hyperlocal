@@ -30,6 +30,10 @@ jobs:
       DATABASE_URL: postgresql://hl:hl@localhost:5432/hl
       REDIS_URL: redis://localhost:6379
       OTP_PROVIDER: console
+      PAYMENT_GATEWAY: manual
+      API_PUBLIC_URL: http://localhost:3000
+      PAYMENT_RETURN_URL: http://localhost:3001/listings/pending
+      PUSH_PROVIDER: console
 
     steps:
       - uses: actions/checkout@v4
@@ -61,3 +65,82 @@ jobs:
       - run: npm run lint -w @hl/api
       - run: npm run test -w @hl/api
       - run: npm run build -w @hl/api
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - run: npm ci
+      - run: npm run shared:build
+      - run: npm run typecheck -w @hl/web
+      - run: npm run lint -w @hl/web
+      - name: Build
+        working-directory: apps/web
+        env:
+          NEXT_PUBLIC_API_BASE_URL: https://api.example
+          NEXT_PUBLIC_MAPBOX_TOKEN: pk.ci
+        run: npm run build
+
+  mobile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - run: npm ci
+      - run: npm run shared:build
+      - run: npm run mobile:typecheck
+      - run: npm run mobile:lint
+
+  # Build and push production images on main. Gated on AWS credentials being
+  # configured as repo secrets; skipped on PRs and forks.
+  images:
+    needs: [api, web, mobile]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      AWS_REGION: me-central-1
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: me-central-1
+
+      - name: Login to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push API image
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          IMAGE="$REGISTRY/hyperlocal/api:${GITHUB_SHA}"
+          docker build -f apps/api/Dockerfile -t "$IMAGE" .
+          docker push "$IMAGE"
+
+      - name: Build and push web image
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          IMAGE="$REGISTRY/hyperlocal/web:${GITHUB_SHA}"
+          docker build -f apps/web/Dockerfile \
+            --build-arg NEXT_PUBLIC_API_BASE_URL="${{ secrets.NEXT_PUBLIC_API_BASE_URL }}" \
+            --build-arg NEXT_PUBLIC_MAPBOX_TOKEN="${{ secrets.NEXT_PUBLIC_MAPBOX_TOKEN }}" \
+            -t "$IMAGE" .
+          docker push "$IMAGE"
+
+      # Deploy is a separate, manually-approved step (see docs/DEPLOYMENT.md):
+      # run migrations as a one-off task, then update the ECS services to the new
+      # image. Kept out of CI so a schema change is never applied unattended.
