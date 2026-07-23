@@ -1,13 +1,14 @@
 import React, { useEffect, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 import Mapbox from '@rnmapbox/maps';
 import * as Location from 'expo-location';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import { UserRole, type ListingSummary } from '@hl/shared';
+import { ReportTargetType, UserRole, type ListingSummary } from '@hl/shared';
 import type { RootStackParamList } from '../navigation/types';
 import { useAuth } from '../context/AuthContext';
 import { fetchNearbyListings } from '../api/listings';
 import { startConversation } from '../api/chat';
+import { reportTarget } from '../api/reports';
 import { ApiError } from '../api/client';
 import { ErrorNotice } from '../components/ErrorNotice';
 import { colors } from '../components/theme';
@@ -43,6 +44,30 @@ export function MapScreen({ navigation }: Props) {
     } finally {
       setMessaging(false);
     }
+  }
+
+  function reportListing(listing: ListingSummary) {
+    if (status !== 'authenticated' || accessToken === null) {
+      navigation.navigate('Login');
+      return;
+    }
+    const submit = async (reason: string) => {
+      try {
+        await reportTarget(accessToken, ReportTargetType.LISTING, listing.id, reason);
+        setSelected(null);
+        Alert.alert('Thank you', 'Our team will review this listing.');
+      } catch (err) {
+        setError(err instanceof ApiError ? err.message : 'Could not submit your report.');
+      }
+    };
+    // Preset reasons work on both platforms (Alert.prompt is iOS-only) and give
+    // the moderator a structured signal.
+    Alert.alert('Report listing', 'Why are you reporting this?', [
+      { text: 'Scam or fake job', onPress: () => void submit('Scam or fake job') },
+      { text: 'Spam', onPress: () => void submit('Spam') },
+      { text: 'Wrong or offensive', onPress: () => void submit('Wrong or offensive content') },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
   }
 
   async function load(lng: number, lat: number) {
@@ -131,9 +156,16 @@ export function MapScreen({ navigation }: Props) {
               </Text>
             </Pressable>
           )}
-          <Pressable onPress={() => setSelected(null)}>
-            <Text style={styles.sheetClose}>Close</Text>
-          </Pressable>
+          <View style={styles.sheetActions}>
+            <Pressable onPress={() => setSelected(null)}>
+              <Text style={styles.sheetClose}>Close</Text>
+            </Pressable>
+            {selected.authorId !== user?.id && (
+              <Pressable onPress={() => reportListing(selected)}>
+                <Text style={styles.sheetReport}>Report</Text>
+              </Pressable>
+            )}
+          </View>
         </View>
       )}
     </View>
@@ -183,5 +215,7 @@ const styles = StyleSheet.create({
   },
   messageButtonDisabled: { opacity: 0.5 },
   messageButtonText: { color: colors.canvas, fontSize: 15, fontWeight: '600' },
-  sheetClose: { fontSize: 13, color: `${colors.slate}80`, textAlign: 'center' },
+  sheetActions: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  sheetClose: { fontSize: 13, color: `${colors.slate}80` },
+  sheetReport: { fontSize: 13, color: `${colors.slate}80`, textDecorationLine: 'underline' },
 });

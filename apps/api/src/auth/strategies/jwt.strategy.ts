@@ -1,4 +1,4 @@
-import { Inject, Injectable, UnauthorizedException } from '@nestjs/common';
+import { ForbiddenException, Inject, Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
@@ -17,6 +17,7 @@ export interface AuthenticatedUser {
   displayName: string;
   role: UserRole;
   isProfileComplete: boolean;
+  isAdmin: boolean;
 }
 
 @Injectable()
@@ -48,12 +49,22 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       });
     }
 
+    // Bans take effect on the next request rather than waiting for the access
+    // token to expire — the same reason role is read fresh here.
+    if (row.bannedAt !== null) {
+      throw new ForbiddenException({
+        errorCode: ErrorCode.ACCOUNT_BANNED,
+        message: 'This account has been suspended.',
+      });
+    }
+
     return {
       id: row.id,
       phoneE164: row.phoneE164,
       displayName: row.displayName,
       role: row.role as UserRole,
       isProfileComplete: row.isProfileComplete,
+      isAdmin: row.isAdmin,
     };
   }
 }

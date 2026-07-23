@@ -3,9 +3,11 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { ListingSummary } from '@hl/shared';
+import { ReportTargetType } from '@hl/shared';
 import { useAuth } from '@/context/AuthContext';
 import { fetchNearbyListings } from '@/lib/listings-client';
 import { startConversation } from '@/lib/chat-client';
+import { reportTarget } from '@/lib/reports-client';
 import { ApiError } from '@/lib/api-client';
 import { MapView } from '@/components/MapView';
 import { ErrorNotice } from '@/components/ErrorNotice';
@@ -19,6 +21,7 @@ export default function MapPage() {
   const [center, setCenter] = useState(DEIRA_DUBAI);
   const [selected, setSelected] = useState<ListingSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [messaging, setMessaging] = useState(false);
 
@@ -56,7 +59,10 @@ export default function MapPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const handleMarkerClick = useCallback((listing: ListingSummary) => setSelected(listing), []);
+  const handleMarkerClick = useCallback((listing: ListingSummary) => {
+    setNotice(null);
+    setSelected(listing);
+  }, []);
 
   const openChat = useCallback(async () => {
     if (!selected) return;
@@ -72,6 +78,23 @@ export default function MapPage() {
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not open a conversation.');
       setMessaging(false);
+    }
+  }, [selected, status, accessToken, router]);
+
+  const reportListing = useCallback(async () => {
+    if (!selected) return;
+    if (status !== 'authenticated' || !accessToken) {
+      router.push('/login');
+      return;
+    }
+    const reason = window.prompt('What is wrong with this listing?');
+    if (!reason || reason.trim().length < 3) return;
+    setError(null);
+    try {
+      await reportTarget(accessToken, ReportTargetType.LISTING, selected.id, reason.trim());
+      setNotice('Thanks — our team will review this listing.');
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not submit your report.');
     }
   }, [selected, status, accessToken, router]);
 
@@ -122,6 +145,7 @@ export default function MapPage() {
                 <span>{(selected.distanceMeters / 1000).toFixed(1)} km away</span>
               )}
             </div>
+            {notice && <p className="mt-4 text-sm text-signal">{notice}</p>}
             {!isOwnListing && (
               <button
                 onClick={openChat}
@@ -131,9 +155,16 @@ export default function MapPage() {
                 {messaging ? 'Opening…' : `Message ${selected.authorDisplayName}`}
               </button>
             )}
-            <button onClick={() => setSelected(null)} className="mt-3 w-full text-center text-sm text-slate/50">
-              Close
-            </button>
+            <div className="mt-3 flex items-center justify-between text-sm">
+              <button onClick={() => setSelected(null)} className="text-slate/50">
+                Close
+              </button>
+              {!isOwnListing && (
+                <button onClick={reportListing} className="text-slate/50 underline">
+                  Report
+                </button>
+              )}
+            </div>
           </div>
         </div>
       )}

@@ -162,6 +162,14 @@ export default function DashboardPage() {
             >
               Messages
             </a>
+            {user?.isAdmin && (
+              <a
+                href="/admin"
+                className="inline-block rounded-card border border-ink px-6 py-3 text-sm font-semibold text-ink"
+              >
+                Admin
+              </a>
+            )}
           </div>
         </section>
 

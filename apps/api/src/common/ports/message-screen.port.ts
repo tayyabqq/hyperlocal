@@ -9,16 +9,9 @@ export interface ScreenResult {
 /**
  * Content gate applied to a message before it is stored. Chat depends on this
  * seam so the keyword blacklist and its tuning live in the moderation module
- * (M5) without chat importing it. The default binding allows everything;
- * moderation replaces it.
+ * without chat importing it — the moderation module provides the binding
+ * globally.
  */
 export interface MessageScreen {
   screen(body: string): ScreenResult;
-}
-
-/** Baseline used until moderation provides a real screen. */
-export class AllowAllMessageScreen implements MessageScreen {
-  screen(): ScreenResult {
-    return { allowed: true };
-  }
 }

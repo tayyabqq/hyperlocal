@@ -1,4 +1,5 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Test } from '@nestjs/testing';
 import { PaymentMethod, PaymentOrderStatus } from '@hl/shared';
@@ -101,6 +102,8 @@ describe('ListingsService', () => {
         { provide: LISTING_PAYMENT_PORT, useValue: { chargeForListing } },
         { provide: AnalyticsService, useValue: { track } },
         { provide: EventEmitter2, useValue: { emit } },
+        // Weekly limit disabled by default so create tests keep one execute per call.
+        { provide: ConfigService, useValue: { get: () => '0' } },
       ],
     }).compile();
 
@@ -166,6 +169,31 @@ describe('ListingsService', () => {
       await expect(service.create(author, validDto)).rejects.toThrow(
         'Listing insert did not return an id',
       );
+    });
+
+    it('rejects a post once the weekly listing cap is reached', async () => {
+      const moduleRef = await Test.createTestingModule({
+        providers: [
+          ListingsService,
+          { provide: DB, useValue: { execute, update: dbUpdate } },
+          {
+            provide: REDIS,
+            useValue: { get: redisGet, set: redisSet, keys: redisKeys, del: redisDel },
+          },
+          { provide: LISTING_PAYMENT_PORT, useValue: { chargeForListing } },
+          { provide: AnalyticsService, useValue: { track } },
+          { provide: EventEmitter2, useValue: { emit } },
+          { provide: ConfigService, useValue: { get: () => '1' } }, // cap of 1/week
+        ],
+      }).compile();
+      const capped = moduleRef.get(ListingsService);
+
+      execute.mockResolvedValueOnce([{ count: 1 }]); // already at the cap
+
+      await expect(capped.create(author, validDto)).rejects.toMatchObject({
+        response: expect.objectContaining({ errorCode: 'WEEKLY_LISTING_LIMIT' }),
+      });
+      expect(chargeForListing).not.toHaveBeenCalled();
     });
   });
 

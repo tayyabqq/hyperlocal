@@ -22,6 +22,7 @@ import { DB, type Database } from '../db/db.module';
 import { listings, users } from '../db/schema';
 import { REDIS } from '../redis/redis.module';
 import { AnalyticsService } from '../analytics/analytics.service';
+import { ConfigService } from '@nestjs/config';
 import { isWithinUae } from '../common/geo/uae-bounds';
 import {
   LISTING_PAYMENT_PORT,
@@ -39,6 +40,11 @@ const LISTING_TTL_DAYS = 7;
 const DEFAULT_RADIUS_METERS = 2000;
 const MAX_RESULTS = 200;
 const BROWSE_CACHE_TTL_SECONDS = 20;
+const WEEK_MS = 7 * 86_400_000;
+// Default cap on listings per account per rolling week. Stops labour agents
+// from flooding the map and converting it into an agency board (P5: platform
+// capture by power users). Overridable via WEEKLY_LISTING_LIMIT.
+const DEFAULT_WEEKLY_LISTING_LIMIT = 20;
 // ~110m grid at the equator — coarse enough to make nearby requests share a
 // cache entry, fine enough that "nearby" still means nearby.
 const CACHE_GRID_PRECISION = 3;
@@ -85,13 +91,20 @@ function toIso(value: string | Date | null): string | null {
 export class ListingsService {
   private readonly logger = new Logger(ListingsService.name);
 
+  private readonly weeklyLimit: number;
+
   constructor(
     @Inject(DB) private readonly db: Database,
     @Inject(REDIS) private readonly redis: Redis,
     @Inject(LISTING_PAYMENT_PORT) private readonly payments: ListingPaymentPort,
     private readonly analytics: AnalyticsService,
     private readonly events: EventEmitter2,
-  ) {}
+    private readonly config: ConfigService,
+  ) {
+    this.weeklyLimit = Number(
+      this.config.get<string>('WEEKLY_LISTING_LIMIT') ?? DEFAULT_WEEKLY_LISTING_LIMIT,
+    );
+  }
 
   /**
    * Creates the listing in PENDING_PAYMENT and opens a charge for it. The
@@ -105,6 +118,18 @@ export class ListingsService {
         errorCode: ErrorCode.LOCATION_OUT_OF_BOUNDS,
         message: 'Listings must be located within the UAE.',
       });
+    }
+
+    // Power-user guardrail: cap listings per rolling week so agents can't flood
+    // the map. Counted before the write so the cap is never exceeded by one.
+    if (this.weeklyLimit > 0) {
+      const recent = await this.countRecentByAuthor(author.id, WEEK_MS);
+      if (recent >= this.weeklyLimit) {
+        throw new BadRequestException({
+          errorCode: ErrorCode.WEEKLY_LISTING_LIMIT,
+          message: `You can post up to ${this.weeklyLimit} listings per week. Try again in a few days.`,
+        });
+      }
     }
 
     // Geography column is set via ST_MakePoint/ST_SetSRID — Drizzle's insert
@@ -329,6 +354,52 @@ export class ListingsService {
       }
     }
     return result.length;
+  }
+
+  /**
+   * Moderator kill switch. Any non-removed listing can be taken down; the
+   * browse cache is invalidated so it disappears from the map immediately.
+   * Returns whether a listing was actually removed so the caller can 404.
+   */
+  async removeByModerator(listingId: string): Promise<boolean> {
+    const removed = await this.db
+      .update(listings)
+      .set({ status: 'REMOVED' })
+      .where(and(eq(listings.id, listingId), sql`${listings.status} <> 'REMOVED'`))
+      .returning({ id: listings.id });
+
+    if (removed.length > 0) await this.invalidateBrowseCache();
+    return removed.length > 0;
+  }
+
+  /**
+   * Removes every live or pending listing belonging to a user — used when the
+   * account is banned, so a scammer's listings leave the map with them rather
+   * than lingering after the ban.
+   */
+  async removeAllByAuthor(authorId: string): Promise<number> {
+    const removed = await this.db
+      .update(listings)
+      .set({ status: 'REMOVED' })
+      .where(
+        and(eq(listings.authorId, authorId), sql`${listings.status} IN ('ACTIVE', 'PENDING_PAYMENT')`),
+      )
+      .returning({ id: listings.id });
+
+    if (removed.length > 0) await this.invalidateBrowseCache();
+    return removed.length;
+  }
+
+  /** Listings a user created in the trailing window — the power-user guardrail. */
+  async countRecentByAuthor(authorId: string, sinceMs: number): Promise<number> {
+    // postgres.js cannot bind a Date as a raw parameter, so the cutoff crosses
+    // the wire as an ISO string and is cast back to timestamptz in SQL.
+    const since = new Date(Date.now() - sinceMs).toISOString();
+    const rows = await this.db.execute<{ count: number }>(sql`
+      SELECT COUNT(*)::int AS count FROM ${listings}
+      WHERE author_id = ${authorId} AND status <> 'REMOVED' AND created_at >= ${since}::timestamptz
+    `);
+    return rows[0]?.count ?? 0;
   }
 
   /** Clears drafts whose payment was never completed so they stop accumulating. */

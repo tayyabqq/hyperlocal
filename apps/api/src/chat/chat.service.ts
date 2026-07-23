@@ -156,6 +156,7 @@ export class ChatService {
 
     const verdict = this.screen.screen(body);
     if (!verdict.allowed) {
+      await this.analytics.track(AnalyticsEvent.MESSAGE_BLOCKED, senderId, { conversationId });
       throw new BadRequestException({
         errorCode: ErrorCode.MESSAGE_REJECTED,
         message: verdict.reason ?? 'This message was blocked.',

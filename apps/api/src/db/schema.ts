@@ -28,6 +28,11 @@ export const users = pgTable(
      * true, so clients route new users into onboarding rather than the map.
      */
     isProfileComplete: boolean('is_profile_complete').notNull().default(false),
+    /** Admin surface access. Granted out-of-band (see scripts/set-admin.ts). */
+    isAdmin: boolean('is_admin').notNull().default(false),
+    /** Set when a moderator bans the account; the JWT strategy blocks banned users on every request. */
+    bannedAt: timestamp('banned_at', { withTimezone: true }),
+    bannedReason: text('banned_reason'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     lastActiveAt: timestamp('last_active_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -320,3 +325,73 @@ export const deviceTokens = pgTable(
 export type ConversationRow = typeof conversations.$inferSelect;
 export type MessageRow = typeof messages.$inferSelect;
 export type DeviceTokenRow = typeof deviceTokens.$inferSelect;
+
+export const reportTargetType = pgEnum('report_target_type', ['LISTING', 'USER', 'MESSAGE']);
+export const reportStatus = pgEnum('report_status', ['OPEN', 'RESOLVED', 'DISMISSED']);
+
+/**
+ * User reports — the trust backstop behind the paid-listing filter. A tight-knit
+ * community warns each other fast (P5), so a report must reach a moderator
+ * quickly; the status index keeps the open queue cheap to read.
+ */
+export const reports = pgTable(
+  'reports',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    reporterId: uuid('reporter_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    targetType: reportTargetType('target_type').notNull(),
+    /** Not a FK: targets span three tables, and a report should outlive its target. */
+    targetId: uuid('target_id').notNull(),
+    reason: text('reason').notNull(),
+    status: reportStatus('status').notNull().default('OPEN'),
+    resolutionNote: text('resolution_note'),
+    resolvedBy: uuid('resolved_by').references(() => users.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+  },
+  (t) => ({
+    statusIdx: index('reports_status_idx').on(t.status, t.createdAt),
+    targetIdx: index('reports_target_idx').on(t.targetType, t.targetId),
+  }),
+);
+
+/**
+ * Append-only audit trail of every moderator action. Moderation cannot be
+ * bolted on after launch (Engineering Non-Negotiables), and neither can its
+ * accountability — every kill and ban is attributable.
+ */
+export const moderationActions = pgTable(
+  'moderation_actions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    // Nullable so an audit row survives the admin account being deleted; the
+    // action itself is the record, the actor id is best-effort attribution.
+    adminId: uuid('admin_id').references(() => users.id, { onDelete: 'set null' }),
+    action: text('action').notNull(),
+    targetType: text('target_type').notNull(),
+    targetId: uuid('target_id').notNull(),
+    note: text('note'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({ adminIdx: index('moderation_actions_admin_idx').on(t.adminId, t.createdAt) }),
+);
+
+/**
+ * Keyword blacklist, seeded with known scam patterns (Engineering
+ * Non-Negotiables: "pre-populate with known scam patterns"). Editable by admins
+ * and cached in memory by the message screen.
+ */
+export const blockedKeywords = pgTable(
+  'blocked_keywords',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    term: text('term').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({ termIdx: uniqueIndex('blocked_keywords_term_idx').on(t.term) }),
+);
+
+export type ReportRow = typeof reports.$inferSelect;
+export type BlockedKeywordRow = typeof blockedKeywords.$inferSelect;

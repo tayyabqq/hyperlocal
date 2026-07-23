@@ -76,6 +76,13 @@ class Env {
   @Max(50)
   LAUNCH_FREE_LISTING_CREDITS?: number;
 
+  /** Max listings per account per rolling week. 0 disables the cap. */
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(1000)
+  WEEKLY_LISTING_LIMIT?: number;
+
   @IsIn(['console', 'fcm'])
   PUSH_PROVIDER!: string;
 

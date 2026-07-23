@@ -14,6 +14,8 @@ export interface UserProfile {
   displayName: string;
   role: UserRole;
   isProfileComplete: boolean;
+  /** Grants access to the admin surface. Read from the DB on every request. */
+  isAdmin: boolean;
   createdAt: string;
 }
 
@@ -84,6 +86,10 @@ export const ErrorCode = {
   CONVERSATION_WITH_SELF: 'CONVERSATION_WITH_SELF',
   LISTING_NOT_ACTIVE: 'LISTING_NOT_ACTIVE',
   MESSAGE_REJECTED: 'MESSAGE_REJECTED',
+  WEEKLY_LISTING_LIMIT: 'WEEKLY_LISTING_LIMIT',
+  ACCOUNT_BANNED: 'ACCOUNT_BANNED',
+  REPORT_NOT_FOUND: 'REPORT_NOT_FOUND',
+  FORBIDDEN: 'FORBIDDEN',
   INTERNAL: 'INTERNAL',
 } as const;
 
@@ -114,6 +120,10 @@ export const AnalyticsEvent = {
   CONVERSATION_STARTED: 'conversation_started',
   MESSAGE_SENT: 'message_sent',
   PUSH_SENT: 'push_sent',
+  REPORT_CREATED: 'report_created',
+  MESSAGE_BLOCKED: 'message_blocked',
+  LISTING_MODERATED: 'listing_moderated',
+  USER_BANNED: 'user_banned',
 } as const;
 
 export type AnalyticsEventName = (typeof AnalyticsEvent)[keyof typeof AnalyticsEvent];
@@ -279,4 +289,81 @@ export enum DevicePlatform {
 export interface RegisterDeviceBody {
   token: string;
   platform: DevicePlatform;
+}
+
+/** Moderation. The paid fee is the primary spam filter; these are the backstops. */
+export enum ReportTargetType {
+  LISTING = 'LISTING',
+  USER = 'USER',
+  MESSAGE = 'MESSAGE',
+}
+
+export enum ReportStatus {
+  OPEN = 'OPEN',
+  RESOLVED = 'RESOLVED',
+  DISMISSED = 'DISMISSED',
+}
+
+export interface CreateReportBody {
+  targetType: ReportTargetType;
+  targetId: string;
+  reason: string;
+}
+
+export const REPORT_REASON_MAX_LENGTH = 500;
+
+export interface ReportSummary {
+  id: string;
+  targetType: ReportTargetType;
+  targetId: string;
+  reason: string;
+  status: ReportStatus;
+  reporterId: string;
+  reporterName: string;
+  /** Context for the queue: the reported listing/message text, when resolvable. */
+  targetPreview: string | null;
+  createdAt: string;
+  resolvedAt: string | null;
+}
+
+/** What an admin does when clearing a report. */
+export enum ModerationAction {
+  DISMISS = 'DISMISS',
+  KILL_LISTING = 'KILL_LISTING',
+  BAN_USER = 'BAN_USER',
+}
+
+export interface ResolveReportBody {
+  action: ModerationAction;
+  note?: string;
+}
+
+export interface AdminMetrics {
+  totalUsers: number;
+  bannedUsers: number;
+  activeListings: number;
+  listingsLast7Days: number;
+  paidListingsLast7Days: number;
+  /** Paid-order conversion over listings created in the window, as a percentage. */
+  paidConversionPct: number;
+  conversationsLast7Days: number;
+  messagesLast7Days: number;
+  openReports: number;
+}
+
+export interface BlockedKeyword {
+  id: string;
+  term: string;
+  createdAt: string;
+}
+
+export interface AdminUserSummary {
+  id: string;
+  phoneE164: string;
+  displayName: string;
+  role: UserRole;
+  isAdmin: boolean;
+  bannedAt: string | null;
+  bannedReason: string | null;
+  createdAt: string;
 }

@@ -261,6 +261,7 @@ export function toUserProfile(row: UserRow): UserProfile {
     displayName: row.displayName,
     role: row.role as UserRole,
     isProfileComplete: row.isProfileComplete,
+    isAdmin: row.isAdmin,
     createdAt: row.createdAt.toISOString(),
   };
 }
