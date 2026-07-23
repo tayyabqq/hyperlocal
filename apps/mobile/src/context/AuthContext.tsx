@@ -10,6 +10,7 @@ import React, {
 import type { AuthTokens, RequestOtpResult, UserProfile, VerifyOtpResult } from '@hl/shared';
 import { authedFetch, publicFetch } from '../api/client';
 import { tokenStore } from '../api/secure-store';
+import { registerPushToken } from '../push/registerPush';
 
 type AuthStatus = 'loading' | 'authenticated' | 'unauthenticated';
 
@@ -62,6 +63,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     bootstrapped.current = true;
     void refresh();
   }, [refresh]);
+
+  // Register this device for push once per authenticated session, so the FCM
+  // token is refreshed on every login (tokens rotate) without blocking auth.
+  const pushRegisteredFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (status !== 'authenticated' || !accessToken) return;
+    if (pushRegisteredFor.current === accessToken) return;
+    pushRegisteredFor.current = accessToken;
+    void registerPushToken(accessToken);
+  }, [status, accessToken]);
 
   const requestOtp = useCallback(
     (phoneE164: string) =>

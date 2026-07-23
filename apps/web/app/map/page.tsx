@@ -5,6 +5,8 @@ import { useRouter } from 'next/navigation';
 import type { ListingSummary } from '@hl/shared';
 import { useAuth } from '@/context/AuthContext';
 import { fetchNearbyListings } from '@/lib/listings-client';
+import { startConversation } from '@/lib/chat-client';
+import { ApiError } from '@/lib/api-client';
 import { MapView } from '@/components/MapView';
 import { ErrorNotice } from '@/components/ErrorNotice';
 
@@ -12,12 +14,13 @@ const DEIRA_DUBAI = { latitude: 25.2697, longitude: 55.3095 };
 
 export default function MapPage() {
   const router = useRouter();
-  const { status } = useAuth();
+  const { status, accessToken, user } = useAuth();
   const [listings, setListings] = useState<ListingSummary[]>([]);
   const [center, setCenter] = useState(DEIRA_DUBAI);
   const [selected, setSelected] = useState<ListingSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [messaging, setMessaging] = useState(false);
 
   const loadListings = useCallback(async (lat: number, lng: number) => {
     setLoading(true);
@@ -54,6 +57,26 @@ export default function MapPage() {
   }, []);
 
   const handleMarkerClick = useCallback((listing: ListingSummary) => setSelected(listing), []);
+
+  const openChat = useCallback(async () => {
+    if (!selected) return;
+    if (status !== 'authenticated' || !accessToken) {
+      router.push('/login');
+      return;
+    }
+    setError(null);
+    setMessaging(true);
+    try {
+      const conversation = await startConversation(accessToken, selected.id);
+      router.push(`/messages/${conversation.id}`);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not open a conversation.');
+      setMessaging(false);
+    }
+  }, [selected, status, accessToken, router]);
+
+  // Hide the message button on the caller's own listing — you can't chat with yourself.
+  const isOwnListing = selected !== null && selected.authorId === user?.id;
 
   return (
     <main className="relative h-screen w-screen">
@@ -99,7 +122,16 @@ export default function MapPage() {
                 <span>{(selected.distanceMeters / 1000).toFixed(1)} km away</span>
               )}
             </div>
-            <button onClick={() => setSelected(null)} className="mt-4 w-full text-center text-sm text-slate/50">
+            {!isOwnListing && (
+              <button
+                onClick={openChat}
+                disabled={messaging}
+                className="mt-4 w-full rounded-card bg-ink px-6 py-3 text-sm font-semibold text-canvas disabled:opacity-50"
+              >
+                {messaging ? 'Opening…' : `Message ${selected.authorDisplayName}`}
+              </button>
+            )}
+            <button onClick={() => setSelected(null)} className="mt-3 w-full text-center text-sm text-slate/50">
               Close
             </button>
           </div>

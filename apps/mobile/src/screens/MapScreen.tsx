@@ -7,6 +7,8 @@ import { UserRole, type ListingSummary } from '@hl/shared';
 import type { RootStackParamList } from '../navigation/types';
 import { useAuth } from '../context/AuthContext';
 import { fetchNearbyListings } from '../api/listings';
+import { startConversation } from '../api/chat';
+import { ApiError } from '../api/client';
 import { ErrorNotice } from '../components/ErrorNotice';
 import { colors } from '../components/theme';
 
@@ -15,11 +17,33 @@ type Props = NativeStackScreenProps<RootStackParamList, 'Map'>;
 const DEIRA_DUBAI: [number, number] = [55.3095, 25.2697]; // Mapbox order: [lng, lat]
 
 export function MapScreen({ navigation }: Props) {
-  const { status } = useAuth();
+  const { status, accessToken, user } = useAuth();
   const [listings, setListings] = useState<ListingSummary[]>([]);
   const [center, setCenter] = useState<[number, number]>(DEIRA_DUBAI);
   const [selected, setSelected] = useState<ListingSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [messaging, setMessaging] = useState(false);
+
+  async function openChat(listing: ListingSummary) {
+    if (status !== 'authenticated' || accessToken === null) {
+      navigation.navigate('Login');
+      return;
+    }
+    setError(null);
+    setMessaging(true);
+    try {
+      const conversation = await startConversation(accessToken, listing.id);
+      setSelected(null);
+      navigation.navigate('Conversation', {
+        conversationId: conversation.id,
+        counterpartName: conversation.counterpartName,
+      });
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not open a conversation.');
+    } finally {
+      setMessaging(false);
+    }
+  }
 
   async function load(lng: number, lat: number) {
     try {
@@ -96,6 +120,17 @@ export function MapScreen({ navigation }: Props) {
             <Text style={styles.sheetPay}>AED {selected.payAmountAed}</Text>
           </View>
           <Text style={styles.sheetDescription}>{selected.description}</Text>
+          {selected.authorId !== user?.id && (
+            <Pressable
+              style={[styles.messageButton, messaging && styles.messageButtonDisabled]}
+              disabled={messaging}
+              onPress={() => void openChat(selected)}
+            >
+              <Text style={styles.messageButtonText}>
+                {messaging ? 'Opening…' : `Message ${selected.authorDisplayName}`}
+              </Text>
+            </Pressable>
+          )}
           <Pressable onPress={() => setSelected(null)}>
             <Text style={styles.sheetClose}>Close</Text>
           </Pressable>
@@ -139,5 +174,14 @@ const styles = StyleSheet.create({
   sheetAuthor: { fontSize: 11, color: `${colors.slate}80`, marginTop: 4 },
   sheetPay: { fontSize: 16, fontWeight: '700', color: colors.amber },
   sheetDescription: { fontSize: 14, color: colors.slate, marginBottom: 16 },
+  messageButton: {
+    backgroundColor: colors.ink,
+    borderRadius: 14,
+    paddingVertical: 14,
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  messageButtonDisabled: { opacity: 0.5 },
+  messageButtonText: { color: colors.canvas, fontSize: 15, fontWeight: '600' },
   sheetClose: { fontSize: 13, color: `${colors.slate}80`, textAlign: 'center' },
 });

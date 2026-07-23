@@ -1,4 +1,5 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Test } from '@nestjs/testing';
 import { PaymentMethod, PaymentOrderStatus } from '@hl/shared';
 import { ListingsService, type ListingAuthor } from '../src/listings/listings.service';
@@ -27,6 +28,7 @@ describe('ListingsService', () => {
   let redisDel: jest.Mock;
   let chargeForListing: jest.Mock;
   let track: jest.Mock;
+  let emit: jest.Mock;
 
   const dubai = { latitude: 25.2582, longitude: 55.3047 }; // Deira
 
@@ -86,6 +88,7 @@ describe('ListingsService', () => {
     redisDel = jest.fn().mockResolvedValue(0);
     chargeForListing = jest.fn().mockResolvedValue(pendingCharge);
     track = jest.fn().mockResolvedValue(undefined);
+    emit = jest.fn();
 
     const moduleRef = await Test.createTestingModule({
       providers: [
@@ -97,6 +100,7 @@ describe('ListingsService', () => {
         },
         { provide: LISTING_PAYMENT_PORT, useValue: { chargeForListing } },
         { provide: AnalyticsService, useValue: { track } },
+        { provide: EventEmitter2, useValue: { emit } },
       ],
     }).compile();
 

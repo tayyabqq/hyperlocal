@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell($env:npm_config_cache = \"C:\\\\Users\\\\meitn\\\\AppData\\\\Local\\\\npm-cache\"; Set-Location \"C:\\\\Users\\\\meitn\\\\HyperLocal\"; npm run shared:build 2>&1 | Select-Object -Last 3; Write-Output \"=== SHARED $LASTEXITCODE ===\"; npm run typecheck -w @hl/api; Write-Output \"=== TYPECHECK $LASTEXITCODE ===\")",
+      "PowerShell($env:npm_config_cache = \"C:\\\\Users\\\\meitn\\\\AppData\\\\Local\\\\npm-cache\"; Set-Location \"C:\\\\Users\\\\meitn\\\\HyperLocal\"; npm run typecheck -w @hl/api; Write-Output \"=== TYPECHECK $LASTEXITCODE ===\"; npm run lint -w @hl/api 2>&1 | Select-Object -Last 20; Write-Output \"=== LINT $LASTEXITCODE ===\")",
+      "PowerShell($env:npm_config_cache = \"C:\\\\Users\\\\meitn\\\\AppData\\\\Local\\\\npm-cache\"; Set-Location \"C:\\\\Users\\\\meitn\\\\HyperLocal\"; npm run typecheck -w @hl/api; Write-Output \"=== TYPECHECK $LASTEXITCODE ===\"; npm run test -w @hl/api 2>&1 | Select-Object -Last 15; Write-Output \"=== TEST $LASTEXITCODE ===\")",
+      "PowerShell($env:npm_config_cache = \"C:\\\\Users\\\\meitn\\\\AppData\\\\Local\\\\npm-cache\"; Set-Location \"C:\\\\Users\\\\meitn\\\\HyperLocal\\\\apps\\\\api\"; npm run db:generate 2>&1 | Select-Object -Last 20; Write-Output \"=== GENERATE $LASTEXITCODE ===\")",
+      "PowerShell($env:npm_config_cache = \"C:\\\\Users\\\\meitn\\\\AppData\\\\Local\\\\npm-cache\"; $env:DATABASE_URL = \"postgresql://hl:hl@localhost:55432/hl\"; Set-Location \"C:\\\\Users\\\\meitn\\\\HyperLocal\\\\apps\\\\api\"; npm run db:migrate 2>&1 | Select-Object -Last 4; Write-Output \"=== MIGRATE $LASTEXITCODE ===\")",
+      "PowerShell($env:npm_config_cache = \"C:\\\\Users\\\\meitn\\\\AppData\\\\Local\\\\npm-cache\"; Set-Location \"C:\\\\Users\\\\meitn\\\\HyperLocal\"; npm install --no-audit --no-fund 2>&1 | Select-Object -Last 5; Write-Output \"=== INSTALL EXIT $LASTEXITCODE ===\")",
+      "PowerShell($env:npm_config_cache = \"C:\\\\Users\\\\meitn\\\\AppData\\\\Local\\\\npm-cache\"; Set-Location \"C:\\\\Users\\\\meitn\\\\HyperLocal\"; npm run typecheck -w @hl/web; Write-Output \"=== WEB TC $LASTEXITCODE ===\"; npm run mobile:typecheck; Write-Output \"=== MOBILE TC $LASTEXITCODE ===\")",
+      "PowerShell($env:npm_config_cache = \"C:\\\\Users\\\\meitn\\\\AppData\\\\Local\\\\npm-cache\"; Set-Location \"C:\\\\Users\\\\meitn\\\\HyperLocal\"; npm run typecheck -w @hl/web; Write-Output \"=== WEB TC $LASTEXITCODE ===\"; npm run mobile:typecheck; Write-Output \"=== MOBILE TC $LASTEXITCODE ===\"; npm run mobile:lint; Write-Output \"=== MOBILE LINT $LASTEXITCODE ===\")",
+      "PowerShell($env:npm_config_cache = \"C:\\\\Users\\\\meitn\\\\AppData\\\\Local\\\\npm-cache\"; Set-Location \"C:\\\\Users\\\\meitn\\\\HyperLocal\"; npm run build -w @hl/api 2>&1 | Select-Object -Last 5; Write-Output \"=== BUILD EXIT $LASTEXITCODE ===\")",
+      "Bash(export API_LOG=/c/Users/meitn/AppData/Local/Temp/claude/C--Users-meitn-HyperLocal/150caa8b-a235-4aa3-821f-0f458ba78bb5/scratchpad/api.log)",
+      "Bash(node /c/Users/meitn/AppData/Local/Temp/claude/C--Users-meitn-HyperLocal/150caa8b-a235-4aa3-821f-0f458ba78bb5/scratchpad/e2e-chat.mjs)",
+      "PowerShell($env:npm_config_cache = \"C:\\\\Users\\\\meitn\\\\AppData\\\\Local\\\\npm-cache\"; Set-Location \"C:\\\\Users\\\\meitn\\\\HyperLocal\"; $env:NEXT_PUBLIC_API_BASE_URL=\"http://localhost:3000\"; $env:NEXT_PUBLIC_MAPBOX_TOKEN=\"pk.test\"; npm run build -w @hl/web 2>&1 | Select-Object -Last 30; Write-Output \"=== WEB BUILD $LASTEXITCODE ===\")"
+    ]
+  }
+}

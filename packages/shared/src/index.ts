@@ -80,6 +80,10 @@ export const ErrorCode = {
   PAYMENT_ORDER_NOT_FOUND: 'PAYMENT_ORDER_NOT_FOUND',
   PAYMENT_PROVIDER_UNAVAILABLE: 'PAYMENT_PROVIDER_UNAVAILABLE',
   PAYMENT_ALREADY_SETTLED: 'PAYMENT_ALREADY_SETTLED',
+  CONVERSATION_NOT_FOUND: 'CONVERSATION_NOT_FOUND',
+  CONVERSATION_WITH_SELF: 'CONVERSATION_WITH_SELF',
+  LISTING_NOT_ACTIVE: 'LISTING_NOT_ACTIVE',
+  MESSAGE_REJECTED: 'MESSAGE_REJECTED',
   INTERNAL: 'INTERNAL',
 } as const;
 
@@ -101,11 +105,15 @@ export const AnalyticsEvent = {
   LISTING_VIEWED: 'listing_viewed',
   LISTINGS_BROWSED: 'listings_browsed',
   LISTING_ACTIVATED: 'listing_activated',
+  LISTING_EXPIRED: 'listing_expired',
   PAYMENT_INITIATED: 'payment_initiated',
   PAYMENT_SETTLED: 'payment_settled',
   PAYMENT_FAILED: 'payment_failed',
   CREDIT_GRANTED: 'credit_granted',
   CREDIT_CONSUMED: 'credit_consumed',
+  CONVERSATION_STARTED: 'conversation_started',
+  MESSAGE_SENT: 'message_sent',
+  PUSH_SENT: 'push_sent',
 } as const;
 
 export type AnalyticsEventName = (typeof AnalyticsEvent)[keyof typeof AnalyticsEvent];
@@ -210,4 +218,65 @@ export interface CreateListingResult {
 export interface CreditBalance {
   /** Free listings the user can post without paying. */
   credits: number;
+}
+
+/**
+ * Chat. Strictly 1-to-1 and scoped to a listing (P1 excludes group chat by
+ * design). A conversation is between the listing's author and one inquirer.
+ */
+export interface ChatMessage {
+  id: string;
+  conversationId: string;
+  senderId: string;
+  body: string;
+  createdAt: string;
+  readAt: string | null;
+}
+
+export interface ConversationSummary {
+  id: string;
+  listingId: string;
+  listingCategory: string;
+  /** The other participant, from the caller's perspective. */
+  counterpartId: string;
+  counterpartName: string;
+  lastMessagePreview: string | null;
+  lastMessageAt: string | null;
+  unreadCount: number;
+  createdAt: string;
+}
+
+export interface StartConversationBody {
+  listingId: string;
+}
+
+export interface SendMessageBody {
+  body: string;
+}
+
+export interface ConversationMessagesResult {
+  messages: ChatMessage[];
+  /** Pass as `before` to page further back; null when the start is reached. */
+  nextCursor: string | null;
+}
+
+/** Realtime channel names shared by the gateway and its clients. */
+export const ChatSocketEvent = {
+  MESSAGE_SEND: 'message:send',
+  MESSAGE_NEW: 'message:new',
+  MESSAGE_READ: 'message:read',
+  ERROR: 'chat:error',
+} as const;
+
+export const MESSAGE_MAX_LENGTH = 1000;
+
+export enum DevicePlatform {
+  ANDROID = 'ANDROID',
+  IOS = 'IOS',
+  WEB = 'WEB',
+}
+
+export interface RegisterDeviceBody {
+  token: string;
+  platform: DevicePlatform;
 }

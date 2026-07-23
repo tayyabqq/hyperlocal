@@ -10,6 +10,8 @@ import { DashboardScreen } from '../screens/DashboardScreen';
 import { MapScreen } from '../screens/MapScreen';
 import { NewListingScreen } from '../screens/NewListingScreen';
 import { PaymentPendingScreen } from '../screens/PaymentPendingScreen';
+import { ConversationsScreen } from '../screens/ConversationsScreen';
+import { ConversationScreen } from '../screens/ConversationScreen';
 import { colors } from '../components/theme';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -39,6 +41,8 @@ export function RootNavigator() {
         <Stack.Screen name="Map" component={MapScreen} />
         <Stack.Screen name="NewListing" component={NewListingScreen} />
         <Stack.Screen name="PaymentPending" component={PaymentPendingScreen} />
+        <Stack.Screen name="Conversations" component={ConversationsScreen} />
+        <Stack.Screen name="Conversation" component={ConversationScreen} />
       </Stack.Navigator>
     </NavigationContainer>
   );

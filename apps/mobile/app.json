@@ -26,8 +26,10 @@
       },
       "permissions": [
         "ACCESS_COARSE_LOCATION",
-        "ACCESS_FINE_LOCATION"
-      ]
+        "ACCESS_FINE_LOCATION",
+        "POST_NOTIFICATIONS"
+      ],
+      "googleServicesFile": "./google-services.json"
     },
     "extra": {
       "apiBaseUrl": "http://10.0.2.2:3000",
@@ -38,6 +40,12 @@
         "@rnmapbox/maps",
         {
           "RNMapboxMapsDownloadToken": "REPLACE_WITH_MAPBOX_DOWNLOAD_TOKEN"
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "color": "#14213D"
         }
       ]
     ]

@@ -9,3 +9,5 @@ ci-keys/
 coverage/
 .expo/
 tsconfig.tsbuildinfo
+.claude/settings.local.json
+keys-dev/

@@ -240,3 +240,83 @@ export const webhookEvents = pgTable(
 
 export type PaymentOrderRow = typeof paymentOrders.$inferSelect;
 export type ListingCreditRow = typeof listingCredits.$inferSelect;
+
+/**
+ * A 1-to-1 chat scoped to a listing, between the listing's author and one
+ * inquirer. Group chat is deliberately excluded (P1), so the shape is fixed at
+ * exactly two participants. `authorId` is denormalised from the listing so the
+ * conversation and its access checks survive the listing being removed.
+ *
+ * The unique index makes "open chat" idempotent: a second tap on the same
+ * listing reuses the existing thread rather than forking a parallel one.
+ */
+export const conversations = pgTable(
+  'conversations',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    listingId: uuid('listing_id')
+      .notNull()
+      .references(() => listings.id, { onDelete: 'cascade' }),
+    authorId: uuid('author_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    inquirerId: uuid('inquirer_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    lastMessageAt: timestamp('last_message_at', { withTimezone: true }),
+  },
+  (t) => ({
+    pairIdx: uniqueIndex('conversations_listing_inquirer_idx').on(t.listingId, t.inquirerId),
+    authorIdx: index('conversations_author_idx').on(t.authorId, t.lastMessageAt),
+    inquirerIdx: index('conversations_inquirer_idx').on(t.inquirerId, t.lastMessageAt),
+  }),
+);
+
+export const messages = pgTable(
+  'messages',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    conversationId: uuid('conversation_id')
+      .notNull()
+      .references(() => conversations.id, { onDelete: 'cascade' }),
+    senderId: uuid('sender_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    body: text('body').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    readAt: timestamp('read_at', { withTimezone: true }),
+  },
+  (t) => ({
+    // Keyset pagination reads newest-first within a conversation; the id tie-breaks
+    // messages that share a timestamp.
+    threadIdx: index('messages_thread_idx').on(t.conversationId, t.createdAt, t.id),
+  }),
+);
+
+/**
+ * Push targets. One row per (user, device). Android is the launch platform
+ * (P1), so tokens are FCM registration tokens; the platform column keeps the
+ * table honest if iOS/web are added later.
+ */
+export const deviceTokens = pgTable(
+  'device_tokens',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    token: text('token').notNull(),
+    platform: text('platform').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    tokenIdx: uniqueIndex('device_tokens_token_idx').on(t.token),
+    userIdx: index('device_tokens_user_idx').on(t.userId),
+  }),
+);
+
+export type ConversationRow = typeof conversations.$inferSelect;
+export type MessageRow = typeof messages.$inferSelect;
+export type DeviceTokenRow = typeof deviceTokens.$inferSelect;

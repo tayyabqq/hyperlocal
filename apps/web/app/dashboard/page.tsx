@@ -156,6 +156,12 @@ export default function DashboardPage() {
             >
               Post a listing
             </a>
+            <a
+              href="/messages"
+              className="inline-block rounded-card border border-line px-6 py-3 text-sm font-semibold text-slate"
+            >
+              Messages
+            </a>
           </div>
         </section>
 

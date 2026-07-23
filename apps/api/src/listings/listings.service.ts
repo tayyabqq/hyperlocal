@@ -5,7 +5,7 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { OnEvent } from '@nestjs/event-emitter';
+import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { and, eq, gt, lt, sql } from 'drizzle-orm';
 import type Redis from 'ioredis';
 import {
@@ -32,6 +32,7 @@ import {
   PaymentEvent,
   type PaymentSettledEvent,
 } from '../common/events/payment.events';
+import { ListingEvent, type ListingExpiredEvent } from '../common/events/listing.events';
 import type { CreateListingDto } from './dto/create-listing.dto';
 
 const LISTING_TTL_DAYS = 7;
@@ -89,6 +90,7 @@ export class ListingsService {
     @Inject(REDIS) private readonly redis: Redis,
     @Inject(LISTING_PAYMENT_PORT) private readonly payments: ListingPaymentPort,
     private readonly analytics: AnalyticsService,
+    private readonly events: EventEmitter2,
   ) {}
 
   /**
@@ -308,11 +310,23 @@ export class ListingsService {
       .update(listings)
       .set({ status: 'EXPIRED' })
       .where(and(eq(listings.status, 'ACTIVE'), gt(sql`now()`, listings.expiresAt)))
-      .returning({ id: listings.id });
+      .returning({ id: listings.id, authorId: listings.authorId, category: listings.category });
 
     if (result.length > 0) {
       await this.invalidateBrowseCache();
       this.logger.log(`Expired ${result.length} listing(s).`);
+      // The re-post prompt from the retention playbook: notifications listens
+      // for these and pushes "your listing expired, re-post in one tap".
+      for (const row of result) {
+        await this.analytics.track(AnalyticsEvent.LISTING_EXPIRED, row.authorId, {
+          listingId: row.id,
+        });
+        this.events.emit(ListingEvent.EXPIRED, {
+          listingId: row.id,
+          authorId: row.authorId,
+          category: row.category,
+        } satisfies ListingExpiredEvent);
+      }
     }
     return result.length;
   }

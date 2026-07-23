@@ -157,6 +157,10 @@ export function DashboardScreen({ navigation }: Props) {
         </Pressable>
       </View>
 
+      <Pressable style={styles.messagesButton} onPress={() => navigation.navigate('Conversations')}>
+        <Text style={styles.messagesButtonText}>Messages</Text>
+      </Pressable>
+
       <Text style={styles.sectionTitle}>Your listings</Text>
 
       {listings !== null && listings.length === 0 && (
@@ -262,6 +266,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   secondaryButtonText: { color: colors.slate, fontSize: 15, fontWeight: '600' },
+  messagesButton: {
+    marginTop: 12,
+    borderWidth: 1,
+    borderColor: colors.line,
+    borderRadius: 14,
+    paddingVertical: 16,
+    alignItems: 'center',
+  },
+  messagesButtonText: { color: colors.slate, fontSize: 15, fontWeight: '600' },
   sectionTitle: { fontSize: 17, fontWeight: '700', color: colors.ink, marginTop: 32, marginBottom: 12 },
   emptyCard: {
     borderWidth: 1,

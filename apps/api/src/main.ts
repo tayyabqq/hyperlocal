@@ -5,6 +5,7 @@ import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
+import { RedisIoAdapter } from './chat/redis-io.adapter';
 
 async function bootstrap(): Promise<void> {
   // rawBody is required to authenticate payment-gateway callbacks: the
@@ -32,6 +33,11 @@ async function bootstrap(): Promise<void> {
     .map((o) => o.trim())
     .filter(Boolean);
   app.enableCors({ origin: origins.length > 0 ? origins : false, credentials: true });
+
+  // Chat sockets share the HTTP server; the adapter adds CORS + Redis fan-out.
+  const ioAdapter = new RedisIoAdapter(app, config);
+  await ioAdapter.connectToRedis();
+  app.useWebSocketAdapter(ioAdapter);
 
   app.enableShutdownHooks();
 

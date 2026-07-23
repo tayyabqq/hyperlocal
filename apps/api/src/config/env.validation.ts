@@ -75,6 +75,18 @@ class Env {
   @Min(0)
   @Max(50)
   LAUNCH_FREE_LISTING_CREDITS?: number;
+
+  @IsIn(['console', 'fcm'])
+  PUSH_PROVIDER!: string;
+
+  @IsOptional()
+  @IsString()
+  FCM_PROJECT_ID?: string;
+
+  /** Firebase service-account JSON. Load from AWS Secrets Manager in production. */
+  @IsOptional()
+  @IsString()
+  FCM_SERVICE_ACCOUNT_JSON?: string;
 }
 
 /** Fails fast at boot rather than at first request. */
@@ -121,6 +133,20 @@ export function validateEnv(raw: Record<string, unknown>): Env {
   }
   if (parsed.PAYMENT_GATEWAY === 'manual' && !parsed.API_PUBLIC_URL) {
     throw new Error('PAYMENT_GATEWAY=manual requires: API_PUBLIC_URL');
+  }
+
+  // console push logs instead of delivering; harmless in production but useless,
+  // and its presence there usually means a misconfiguration, so it is refused.
+  if (parsed.NODE_ENV === 'production' && parsed.PUSH_PROVIDER === 'console') {
+    throw new Error('PUSH_PROVIDER=console is not permitted when NODE_ENV=production');
+  }
+  if (parsed.PUSH_PROVIDER === 'fcm') {
+    const missing = (['FCM_PROJECT_ID', 'FCM_SERVICE_ACCOUNT_JSON'] as const).filter(
+      (k) => !parsed[k],
+    );
+    if (missing.length > 0) {
+      throw new Error(`PUSH_PROVIDER=fcm requires: ${missing.join(', ')}`);
+    }
   }
 
   return parsed;
