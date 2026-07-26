@@ -95,4 +95,4 @@ Every mutating admin action writes a `moderation_actions` audit row.
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| GET | `/health` | `{ status, db }` — backs the ALB health check |
+| GET | `/health` | `{ status, db, redis }` — backs the ALB health check. 503 (not 200) if the DB is unreachable. |

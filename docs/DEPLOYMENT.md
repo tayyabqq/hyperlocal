@@ -88,8 +88,12 @@ baked into an image.
   and Redis evictions.
 - **Sentry**: application errors. Initialised only when `SENTRY_DSN` is set; the
   global exception filter reports 5xx (never 4xx).
-- **Health**: `GET /v1/health` returns `{ status, db }` and backs the ALB target
-  health check.
+- **Health**: `GET /v1/health` returns `{ status, db, redis }` and backs the ALB
+  target health check. Returns **503** (not 200) when the database is
+  unreachable, so the ALB actually pulls a broken instance out of rotation.
+  Redis is a soft dependency — an unreachable Redis reports `status: "degraded"`
+  in a 200 response, since browse falls back to the DB and chat degrades to
+  single-node.
 
 ## Load testing
 
