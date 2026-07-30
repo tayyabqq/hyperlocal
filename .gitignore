@@ -9,5 +9,7 @@ ci-keys/
 coverage/
 .expo/
 tsconfig.tsbuildinfo
+google-services.json
+GoogleService-Info.plist
 .claude/settings.local.json
 keys-dev/
