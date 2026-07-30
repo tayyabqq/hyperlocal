@@ -78,6 +78,7 @@ jobs:
       - run: npm run shared:build
       - run: npm run typecheck -w @hl/web
       - run: npm run lint -w @hl/web
+      - run: npm run web:test
       - name: Build
         working-directory: apps/web
         env:
@@ -97,6 +98,7 @@ jobs:
       - run: npm run shared:build
       - run: npm run mobile:typecheck
       - run: npm run mobile:lint
+      - run: npm run mobile:test
 
   # Build and push production images on main. Gated on AWS credentials being
   # configured as repo secrets; skipped on PRs and forks.

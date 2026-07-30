@@ -8,7 +8,7 @@ import React, {
   useState,
 } from 'react';
 import type { AuthTokens, RequestOtpResult, UserProfile, VerifyOtpResult } from '@hl/shared';
-import { authedFetch, publicFetch } from '../api/client';
+import { authedFetch, publicFetch, registerRefreshHandler } from '../api/client';
 import { tokenStore } from '../api/secure-store';
 import { registerPushToken } from '../push/registerPush';
 
@@ -62,6 +62,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (bootstrapped.current) return;
     bootstrapped.current = true;
     void refresh();
+  }, [refresh]);
+
+  // Lets authedFetch transparently retry a 401 (15-minute access token expiry)
+  // without every screen needing to know about refresh.
+  useEffect(() => {
+    registerRefreshHandler(refresh);
+    return () => registerRefreshHandler(null);
   }, [refresh]);
 
   // Register this device for push once per authenticated session, so the FCM

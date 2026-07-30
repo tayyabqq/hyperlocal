@@ -31,12 +31,20 @@ export async function publicFetch<T>(path: string, init?: RequestInit): Promise<
   return parse<T>(res);
 }
 
-export async function authedFetch<T>(
-  path: string,
-  accessToken: string,
-  init?: RequestInit,
-): Promise<T> {
-  const res = await fetch(`${apiBaseUrl()}${path}`, {
+/**
+ * The access token lives for 15 minutes, so a session left open across that
+ * window will 401 on its next call. AuthContext registers its own `refresh`
+ * here once, so every screen's authedFetch gets a transparent retry without
+ * threading a refresh callback through every listings/payments/chat client.
+ */
+let refreshHandler: (() => Promise<string | null>) | null = null;
+
+export function registerRefreshHandler(fn: (() => Promise<string | null>) | null): void {
+  refreshHandler = fn;
+}
+
+function doFetch(path: string, accessToken: string, init?: RequestInit): Promise<Response> {
+  return fetch(`${apiBaseUrl()}${path}`, {
     ...init,
     headers: {
       'Content-Type': 'application/json',
@@ -44,5 +52,19 @@ export async function authedFetch<T>(
       ...(init?.headers ?? {}),
     },
   });
+}
+
+export async function authedFetch<T>(
+  path: string,
+  accessToken: string,
+  init?: RequestInit,
+): Promise<T> {
+  let res = await doFetch(path, accessToken, init);
+
+  if (res.status === 401 && refreshHandler) {
+    const fresh = await refreshHandler();
+    if (fresh) res = await doFetch(path, fresh, init);
+  }
+
   return parse<T>(res);
 }

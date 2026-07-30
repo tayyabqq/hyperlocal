@@ -10,7 +10,7 @@ import {
   useState,
 } from 'react';
 import type { RequestOtpResult, UserProfile } from '@hl/shared';
-import { routeFetch } from '@/lib/api-client';
+import { registerRefreshHandler, routeFetch } from '@/lib/api-client';
 
 type AuthStatus = 'loading' | 'authenticated' | 'unauthenticated';
 
@@ -58,6 +58,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (bootstrapped.current) return;
     bootstrapped.current = true;
     void refresh();
+  }, [refresh]);
+
+  // Lets apiFetch transparently retry a 401 (15-minute access token expiry)
+  // without every call site needing to know about refresh.
+  useEffect(() => {
+    registerRefreshHandler(refresh);
+    return () => registerRefreshHandler(null);
   }, [refresh]);
 
   const requestOtp = useCallback(

@@ -29,7 +29,7 @@ function daysLeft(expiresAt: string | null): string | null {
 
 export default function DashboardPage() {
   const router = useRouter();
-  const { status, accessToken, user, setUser, refresh, logout } = useAuth();
+  const { status, accessToken, user, setUser, logout } = useAuth();
   const [error, setError] = useState<string | null>(null);
   const [listings, setListings] = useState<ListingSummary[] | null>(null);
   const [credits, setCredits] = useState<number | null>(null);
@@ -38,18 +38,12 @@ export default function DashboardPage() {
   const loadProfile = useCallback(async () => {
     if (!accessToken) return;
     try {
+      // apiFetch retries once on 401 (15-minute access token expiry) internally.
       setUser(await apiFetch<UserProfile>('/v1/users/me', accessToken));
     } catch {
-      // A 15-minute access token can expire while the tab sits open; rotate once.
-      const fresh = await refresh();
-      if (!fresh) return;
-      try {
-        setUser(await apiFetch<UserProfile>('/v1/users/me', fresh));
-      } catch {
-        setError('Could not load your profile. Reload the page to try again.');
-      }
+      setError('Could not load your profile. Reload the page to try again.');
     }
-  }, [accessToken, setUser, refresh]);
+  }, [accessToken, setUser]);
 
   const loadListings = useCallback(async () => {
     if (!accessToken) return;

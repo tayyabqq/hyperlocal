@@ -14,9 +14,14 @@
     "api:test": "npm run test -w @hl/api",
     "verify": "npm run shared:build && npm run typecheck -w @hl/api && npm run lint -w @hl/api && npm run test -w @hl/api",
     "mobile:typecheck": "npm run typecheck -w @hl/mobile",
-    "mobile:lint": "npm run lint -w @hl/mobile"
+    "mobile:lint": "npm run lint -w @hl/mobile",
+    "mobile:test": "npm run test -w @hl/mobile",
+    "web:test": "npm run test -w @hl/web"
   },
   "engines": {
     "node": ">=20"
+  },
+  "devDependencies": {
+    "react-native": "^0.74.5"
   }
 }

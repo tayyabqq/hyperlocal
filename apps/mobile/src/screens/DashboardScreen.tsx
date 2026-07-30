@@ -31,7 +31,7 @@ function daysLeft(expiresAt: string | null): string | null {
 }
 
 export function DashboardScreen({ navigation }: Props) {
-  const { accessToken, user, setUser, refresh, logout } = useAuth();
+  const { accessToken, user, setUser, logout } = useAuth();
   const [error, setError] = useState<string | null>(null);
   const [listings, setListings] = useState<ListingSummary[] | null>(null);
   const [credits, setCredits] = useState<number | null>(null);
@@ -40,19 +40,12 @@ export function DashboardScreen({ navigation }: Props) {
   const loadProfile = useCallback(async () => {
     if (accessToken === null) return;
     try {
+      // authedFetch retries once on 401 (15-minute access token expiry) internally.
       setUser(await authedFetch<UserProfile>('/v1/users/me', accessToken));
     } catch {
-      // The 15-minute access token may have expired while the app was
-      // backgrounded; rotate once before surfacing an error.
-      const fresh = await refresh();
-      if (fresh === null) return;
-      try {
-        setUser(await authedFetch<UserProfile>('/v1/users/me', fresh));
-      } catch {
-        setError('Could not load your profile. Pull down to retry.');
-      }
+      setError('Could not load your profile. Pull down to retry.');
     }
-  }, [accessToken, setUser, refresh]);
+  }, [accessToken, setUser]);
 
   const loadListings = useCallback(async () => {
     if (accessToken === null) return;

@@ -16,13 +16,20 @@ function firstMessage(body: Partial<ApiErrorBody>): string {
   return body.message ?? 'Request failed';
 }
 
-/** Authenticated call straight to the API. Bearer, not cookies — no CSRF surface. */
-export async function apiFetch<T>(
-  path: string,
-  accessToken: string,
-  init?: RequestInit,
-): Promise<T> {
-  const res = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}${path}`, {
+/**
+ * The access token lives for 15 minutes, so any tab left open across that
+ * window will 401 on its next call. AuthContext registers its own `refresh`
+ * here once, so every caller of `apiFetch` gets a transparent retry without
+ * threading a refresh callback through every listings/payments/chat client.
+ */
+let refreshHandler: (() => Promise<string | null>) | null = null;
+
+export function registerRefreshHandler(fn: (() => Promise<string | null>) | null): void {
+  refreshHandler = fn;
+}
+
+async function doFetch(path: string, accessToken: string, init?: RequestInit): Promise<Response> {
+  return fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}${path}`, {
     ...init,
     headers: {
       'Content-Type': 'application/json',
@@ -30,6 +37,20 @@ export async function apiFetch<T>(
       ...(init?.headers ?? {}),
     },
   });
+}
+
+/** Authenticated call straight to the API. Bearer, not cookies — no CSRF surface. */
+export async function apiFetch<T>(
+  path: string,
+  accessToken: string,
+  init?: RequestInit,
+): Promise<T> {
+  let res = await doFetch(path, accessToken, init);
+
+  if (res.status === 401 && refreshHandler) {
+    const fresh = await refreshHandler();
+    if (fresh) res = await doFetch(path, fresh, init);
+  }
 
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {
