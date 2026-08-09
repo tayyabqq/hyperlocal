@@ -1,4 +1,6 @@
 import 'reflect-metadata';
+import { join } from 'node:path';
+import express from 'express';
 import helmet from 'helmet';
 import { Logger, ValidationPipe, VersioningType } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -31,6 +33,23 @@ async function bootstrap(): Promise<void> {
     }),
   );
   app.useGlobalFilters(new HttpExceptionFilter());
+
+  // Dev-only: serves what LocalDiskStorageProvider writes to ./uploads. In
+  // production STORAGE_PROVIDER=s3 and images are served straight from the
+  // bucket/CDN, so this route never exists there.
+  if (config.get<string>('STORAGE_PROVIDER') === 'local') {
+    app.use(
+      '/uploads',
+      // helmet's default same-origin CORP would block the web app (a
+      // different origin) from embedding these in <img> tags — this route is
+      // public images, not sensitive data, so it opts out.
+      (_req: express.Request, res: express.Response, next: express.NextFunction) => {
+        res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+        next();
+      },
+      express.static(join(process.cwd(), 'uploads')),
+    );
+  }
 
   const origins = (config.get<string>('CORS_ORIGINS') ?? '')
     .split(',')

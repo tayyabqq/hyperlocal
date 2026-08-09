@@ -11,5 +11,6 @@ coverage/
 tsconfig.tsbuildinfo
 google-services.json
 GoogleService-Info.plist
+apps/api/uploads/
 .claude/settings.local.json
 keys-dev/

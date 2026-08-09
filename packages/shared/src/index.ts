@@ -91,6 +91,10 @@ export const ErrorCode = {
   REPORT_NOT_FOUND: 'REPORT_NOT_FOUND',
   FORBIDDEN: 'FORBIDDEN',
   SERVICE_UNAVAILABLE: 'SERVICE_UNAVAILABLE',
+  TOO_MANY_IMAGES: 'TOO_MANY_IMAGES',
+  INVALID_IMAGE_TYPE: 'INVALID_IMAGE_TYPE',
+  IMAGE_TOO_LARGE: 'IMAGE_TOO_LARGE',
+  IMAGE_NOT_FOUND: 'IMAGE_NOT_FOUND',
   INTERNAL: 'INTERNAL',
 } as const;
 
@@ -156,6 +160,19 @@ export interface ListingSummary {
   activatedAt: string | null;
   /** Null until activation — the 7-day clock starts when the listing goes live. */
   expiresAt: string | null;
+  /** Ordered, lowest position first. Empty for a listing with no photos yet. */
+  images: string[];
+}
+
+/** Limits enforced server-side (Multer config + the images endpoint), not just in the UI. */
+export const MAX_LISTING_IMAGES = 6;
+export const MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024;
+export const ALLOWED_IMAGE_MIMETYPES = ['image/jpeg', 'image/png', 'image/webp'] as const;
+
+export interface ListingImage {
+  id: string;
+  url: string;
+  position: number;
 }
 
 export interface CreateListingRequest {

@@ -157,6 +157,27 @@ export const listings = pgTable(
 
 export type ListingRow = typeof listings.$inferSelect;
 
+export const listingImages = pgTable(
+  'listing_images',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    listingId: uuid('listing_id')
+      .notNull()
+      .references(() => listings.id, { onDelete: 'cascade' }),
+    /** Storage-provider key (S3 object key, or filename under the local dev dir) — needed to delete the file, not just the row. */
+    key: text('key').notNull(),
+    url: text('url').notNull(),
+    /** Display order within the listing, lowest first. */
+    position: integer('position').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    listingIdx: index('listing_images_listing_idx').on(t.listingId, t.position),
+  }),
+);
+
+export type ListingImageRow = typeof listingImages.$inferSelect;
+
 export const paymentOrderStatus = pgEnum('payment_order_status', ['PENDING', 'PAID', 'FAILED']);
 export const paymentMethod = pgEnum('payment_method', ['CARD', 'CREDIT']);
 

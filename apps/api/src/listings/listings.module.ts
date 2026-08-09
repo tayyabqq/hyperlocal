@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { PaymentsModule } from '../payments/payments.module';
+import { StorageModule } from '../common/storage/storage.module';
 import { ListingsController } from './listings.controller';
 import { ListingsService } from './listings.service';
 import { ListingExpiryTask } from './listing-expiry.task';
@@ -9,7 +10,7 @@ import { ListingExpiryTask } from './listing-expiry.task';
  * code depends on the port interface, never on anything inside payments.
  */
 @Module({
-  imports: [PaymentsModule],
+  imports: [PaymentsModule, StorageModule],
   controllers: [ListingsController],
   providers: [ListingsService, ListingExpiryTask],
   exports: [ListingsService],

@@ -34,6 +34,7 @@ jobs:
       API_PUBLIC_URL: http://localhost:3000
       PAYMENT_RETURN_URL: http://localhost:3001/listings/pending
       PUSH_PROVIDER: console
+      STORAGE_PROVIDER: local
 
     steps:
       - uses: actions/checkout@v4

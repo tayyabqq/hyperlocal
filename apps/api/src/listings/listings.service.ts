@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Inject,
   Injectable,
   Logger,
@@ -9,17 +10,20 @@ import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { and, eq, gt, lt, sql } from 'drizzle-orm';
 import type Redis from 'ioredis';
 import {
+  ALLOWED_IMAGE_MIMETYPES,
   AnalyticsEvent,
   ErrorCode,
   ListingStatus,
+  MAX_LISTING_IMAGES,
   type BrowseListingsResult,
   type CreateListingResult,
+  type ListingImage,
   type ListingSummary,
   type PaymentOrderSummary,
   type UserRole,
 } from '@hl/shared';
 import { DB, type Database } from '../db/db.module';
-import { listings, users } from '../db/schema';
+import { listingImages, listings, users } from '../db/schema';
 import { REDIS } from '../redis/redis.module';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { ConfigService } from '@nestjs/config';
@@ -34,7 +38,18 @@ import {
   type PaymentSettledEvent,
 } from '../common/events/payment.events';
 import { ListingEvent, type ListingExpiredEvent } from '../common/events/listing.events';
+import {
+  STORAGE_PROVIDER,
+  type StorageProvider,
+  type StoredFile,
+} from '../common/storage/storage-provider.interface';
 import type { CreateListingDto } from './dto/create-listing.dto';
+
+/** Reused by every read query (browse, mine, detail) to attach ordered image URLs in one round trip. */
+const IMAGE_URLS_SUBQUERY = sql`(
+  SELECT COALESCE(array_agg(li.url ORDER BY li.position), ARRAY[]::text[])
+  FROM listing_images li WHERE li.listing_id = l.id
+)`;
 
 const LISTING_TTL_DAYS = 7;
 const DEFAULT_RADIUS_METERS = 2000;
@@ -79,6 +94,7 @@ interface ListingQueryRow {
   activatedAt: string | Date | null;
   expiresAt: string | Date | null;
   distanceMeters: number | null;
+  imageUrls: string[] | null;
 }
 
 /** Timestamps come back from raw SQL as strings; the query builder gives Dates. Handle both. */
@@ -100,6 +116,7 @@ export class ListingsService {
     private readonly analytics: AnalyticsService,
     private readonly events: EventEmitter2,
     private readonly config: ConfigService,
+    @Inject(STORAGE_PROVIDER) private readonly storage: StorageProvider,
   ) {
     this.weeklyLimit = Number(
       this.config.get<string>('WEEKLY_LISTING_LIMIT') ?? DEFAULT_WEEKLY_LISTING_LIMIT,
@@ -190,6 +207,101 @@ export class ListingsService {
     return toOrderSummary(charge, listingId);
   }
 
+  /**
+   * Author-only. Validates type and the per-listing cap before touching
+   * storage — a rejected file should never reach S3/disk. Position continues
+   * from the current count so repeated uploads append rather than collide.
+   */
+  async uploadImages(
+    listingId: string,
+    authorId: string,
+    files: StoredFile[],
+  ): Promise<ListingImage[]> {
+    await this.requireOwnedListing(listingId, authorId, 'add photos to');
+
+    for (const file of files) {
+      if (!(ALLOWED_IMAGE_MIMETYPES as readonly string[]).includes(file.mimetype)) {
+        throw new BadRequestException({
+          errorCode: ErrorCode.INVALID_IMAGE_TYPE,
+          message: 'Only JPEG, PNG, or WebP images are allowed.',
+        });
+      }
+    }
+
+    const existingCount = await this.countImages(listingId);
+    if (existingCount + files.length > MAX_LISTING_IMAGES) {
+      throw new BadRequestException({
+        errorCode: ErrorCode.TOO_MANY_IMAGES,
+        message: `A listing can have at most ${MAX_LISTING_IMAGES} photos (this one already has ${existingCount}).`,
+      });
+    }
+
+    const uploaded: ListingImage[] = [];
+    for (const [i, file] of files.entries()) {
+      const { key, url } = await this.storage.upload(file);
+      const [row] = await this.db
+        .insert(listingImages)
+        .values({ listingId, key, url, position: existingCount + i })
+        .returning();
+      uploaded.push({ id: row.id, url: row.url, position: row.position });
+    }
+
+    return uploaded;
+  }
+
+  /** Author-only. Deletes the storage object only after the row delete succeeds, so a crash never orphans a row pointing at nothing. */
+  async deleteImage(listingId: string, imageId: string, authorId: string): Promise<void> {
+    await this.requireOwnedListing(listingId, authorId, 'remove photos from');
+
+    const [image] = await this.db
+      .delete(listingImages)
+      .where(and(eq(listingImages.id, imageId), eq(listingImages.listingId, listingId)))
+      .returning();
+
+    if (!image) {
+      throw new NotFoundException({
+        errorCode: ErrorCode.IMAGE_NOT_FOUND,
+        message: 'That photo could not be found.',
+      });
+    }
+
+    await this.storage.delete(image.key);
+  }
+
+  private async requireOwnedListing(
+    listingId: string,
+    authorId: string,
+    action: string,
+  ): Promise<{ authorId: string }> {
+    const [listing] = await this.db
+      .select({ authorId: listings.authorId, status: listings.status })
+      .from(listings)
+      .where(eq(listings.id, listingId))
+      .limit(1);
+
+    if (!listing || listing.status === 'REMOVED') {
+      throw new NotFoundException({
+        errorCode: ErrorCode.LISTING_NOT_FOUND,
+        message: 'This listing no longer exists.',
+      });
+    }
+    if (listing.authorId !== authorId) {
+      throw new ForbiddenException({
+        errorCode: ErrorCode.FORBIDDEN,
+        message: `You can only ${action} your own listings.`,
+      });
+    }
+    return listing;
+  }
+
+  private async countImages(listingId: string): Promise<number> {
+    const rows = await this.db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(listingImages)
+      .where(eq(listingImages.listingId, listingId));
+    return rows[0]?.count ?? 0;
+  }
+
   async browse(
     latitude: number,
     longitude: number,
@@ -216,7 +328,8 @@ export class ListingsService {
         l.latitude, l.longitude, l.location_label AS "locationLabel",
         l.status, l.created_at AS "createdAt", l.activated_at AS "activatedAt",
         l.expires_at AS "expiresAt",
-        ST_Distance(l.location, ST_SetSRID(ST_MakePoint(${longitude}, ${latitude}), 4326)::geography) AS "distanceMeters"
+        ST_Distance(l.location, ST_SetSRID(ST_MakePoint(${longitude}, ${latitude}), 4326)::geography) AS "distanceMeters",
+        ${IMAGE_URLS_SUBQUERY} AS "imageUrls"
       FROM ${listings} l
       JOIN ${users} u ON u.id = l.author_id
       WHERE l.status = 'ACTIVE'
@@ -247,7 +360,8 @@ export class ListingsService {
         l.category, l.pay_amount_aed AS "payAmountAed", l.description,
         l.latitude, l.longitude, l.location_label AS "locationLabel",
         l.status, l.created_at AS "createdAt", l.activated_at AS "activatedAt",
-        l.expires_at AS "expiresAt", NULL AS "distanceMeters"
+        l.expires_at AS "expiresAt", NULL AS "distanceMeters",
+        ${IMAGE_URLS_SUBQUERY} AS "imageUrls"
       FROM ${listings} l
       JOIN ${users} u ON u.id = l.author_id
       WHERE l.author_id = ${authorId} AND l.status <> 'REMOVED'
@@ -274,7 +388,8 @@ export class ListingsService {
         l.latitude, l.longitude, l.location_label AS "locationLabel",
         l.status, l.created_at AS "createdAt", l.activated_at AS "activatedAt",
         l.expires_at AS "expiresAt",
-        ${distanceExpr} AS "distanceMeters"
+        ${distanceExpr} AS "distanceMeters",
+        ${IMAGE_URLS_SUBQUERY} AS "imageUrls"
       FROM ${listings} l
       JOIN ${users} u ON u.id = l.author_id
       WHERE l.id = ${id}
@@ -468,6 +583,7 @@ export class ListingsService {
       createdAt: toIso(row.createdAt) as string,
       activatedAt: toIso(row.activatedAt),
       expiresAt: toIso(row.expiresAt),
+      images: row.imageUrls ?? [],
     };
   }
 }

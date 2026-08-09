@@ -100,6 +100,22 @@ class Env {
   @IsString()
   SENTRY_DSN?: string;
 
+  @IsIn(['local', 's3'])
+  STORAGE_PROVIDER!: string;
+
+  @IsOptional()
+  @IsString()
+  S3_BUCKET?: string;
+
+  @IsOptional()
+  @IsString()
+  S3_REGION?: string;
+
+  /** CDN in front of the bucket, if any. Falls back to the bucket's own regional endpoint. */
+  @IsOptional()
+  @IsString()
+  S3_PUBLIC_BASE_URL?: string;
+
   @IsOptional()
   @IsString()
   APP_VERSION?: string;
@@ -162,6 +178,19 @@ export function validateEnv(raw: Record<string, unknown>): Env {
     );
     if (missing.length > 0) {
       throw new Error(`PUSH_PROVIDER=fcm requires: ${missing.join(', ')}`);
+    }
+  }
+
+  // Local disk storage lives on the ECS task's ephemeral, per-instance
+  // filesystem — a second request hitting a different task would 404 on an
+  // image the first task saved. Never permitted in production.
+  if (parsed.NODE_ENV === 'production' && parsed.STORAGE_PROVIDER === 'local') {
+    throw new Error('STORAGE_PROVIDER=local is not permitted when NODE_ENV=production');
+  }
+  if (parsed.STORAGE_PROVIDER === 's3') {
+    const missing = (['S3_BUCKET', 'S3_REGION'] as const).filter((k) => !parsed[k]);
+    if (missing.length > 0) {
+      throw new Error(`STORAGE_PROVIDER=s3 requires: ${missing.join(', ')}`);
     }
   }
 

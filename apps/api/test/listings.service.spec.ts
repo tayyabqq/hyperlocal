@@ -1,13 +1,14 @@
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Test } from '@nestjs/testing';
-import { PaymentMethod, PaymentOrderStatus } from '@hl/shared';
+import { MAX_LISTING_IMAGES, PaymentMethod, PaymentOrderStatus } from '@hl/shared';
 import { ListingsService, type ListingAuthor } from '../src/listings/listings.service';
 import { DB } from '../src/db/db.module';
 import { REDIS } from '../src/redis/redis.module';
 import { LISTING_PAYMENT_PORT } from '../src/common/ports/listing-payment.port';
 import { AnalyticsService } from '../src/analytics/analytics.service';
+import { STORAGE_PROVIDER } from '../src/common/storage/storage-provider.interface';
 
 /** Minimal thenable stand-in for a Drizzle update-chain. */
 function updateChain(returning: unknown[]) {
@@ -19,10 +20,45 @@ function updateChain(returning: unknown[]) {
   return chain;
 }
 
+/**
+ * Minimal thenable stand-in for a Drizzle select-chain. `where()` is itself
+ * awaitable (countImages awaits it directly) and still chains to `.limit()`
+ * (requireOwnedListing calls `.where(...).limit(1)`), matching real Drizzle.
+ */
+function selectChain(rows: unknown[]) {
+  const resolved = Promise.resolve(rows);
+  const chain: Record<string, unknown> = {
+    from: () => chain,
+    where: () => chain,
+    limit: () => resolved,
+    then: resolved.then.bind(resolved),
+  };
+  return chain;
+}
+
+function insertChain(returning: unknown[]) {
+  const chain: Record<string, unknown> = {
+    values: () => chain,
+    returning: () => Promise.resolve(returning),
+  };
+  return chain;
+}
+
+function deleteChain(returning: unknown[]) {
+  const chain: Record<string, unknown> = {
+    where: () => chain,
+    returning: () => Promise.resolve(returning),
+  };
+  return chain;
+}
+
 describe('ListingsService', () => {
   let service: ListingsService;
   let execute: jest.Mock;
   let dbUpdate: jest.Mock;
+  let dbSelect: jest.Mock;
+  let dbInsert: jest.Mock;
+  let dbDelete: jest.Mock;
   let redisGet: jest.Mock;
   let redisSet: jest.Mock;
   let redisKeys: jest.Mock;
@@ -30,6 +66,8 @@ describe('ListingsService', () => {
   let chargeForListing: jest.Mock;
   let track: jest.Mock;
   let emit: jest.Mock;
+  let storageUpload: jest.Mock;
+  let storageDelete: jest.Mock;
 
   const dubai = { latitude: 25.2582, longitude: 55.3047 }; // Deira
 
@@ -83,6 +121,9 @@ describe('ListingsService', () => {
   beforeEach(async () => {
     execute = jest.fn();
     dbUpdate = jest.fn().mockReturnValue(updateChain([]));
+    dbSelect = jest.fn().mockReturnValue(selectChain([]));
+    dbInsert = jest.fn().mockReturnValue(insertChain([]));
+    dbDelete = jest.fn().mockReturnValue(deleteChain([]));
     redisGet = jest.fn().mockResolvedValue(null);
     redisSet = jest.fn().mockResolvedValue('OK');
     redisKeys = jest.fn().mockResolvedValue([]);
@@ -90,11 +131,16 @@ describe('ListingsService', () => {
     chargeForListing = jest.fn().mockResolvedValue(pendingCharge);
     track = jest.fn().mockResolvedValue(undefined);
     emit = jest.fn();
+    storageUpload = jest.fn().mockResolvedValue({ key: 'file-1.jpg', url: 'https://cdn.example/file-1.jpg' });
+    storageDelete = jest.fn().mockResolvedValue(undefined);
 
     const moduleRef = await Test.createTestingModule({
       providers: [
         ListingsService,
-        { provide: DB, useValue: { execute, update: dbUpdate } },
+        {
+          provide: DB,
+          useValue: { execute, update: dbUpdate, select: dbSelect, insert: dbInsert, delete: dbDelete },
+        },
         {
           provide: REDIS,
           useValue: { get: redisGet, set: redisSet, keys: redisKeys, del: redisDel },
@@ -104,6 +150,7 @@ describe('ListingsService', () => {
         { provide: EventEmitter2, useValue: { emit } },
         // Weekly limit disabled by default so create tests keep one execute per call.
         { provide: ConfigService, useValue: { get: () => '0' } },
+        { provide: STORAGE_PROVIDER, useValue: { upload: storageUpload, delete: storageDelete } },
       ],
     }).compile();
 
@@ -175,7 +222,10 @@ describe('ListingsService', () => {
       const moduleRef = await Test.createTestingModule({
         providers: [
           ListingsService,
-          { provide: DB, useValue: { execute, update: dbUpdate } },
+          {
+            provide: DB,
+            useValue: { execute, update: dbUpdate, select: dbSelect, insert: dbInsert, delete: dbDelete },
+          },
           {
             provide: REDIS,
             useValue: { get: redisGet, set: redisSet, keys: redisKeys, del: redisDel },
@@ -184,6 +234,7 @@ describe('ListingsService', () => {
           { provide: AnalyticsService, useValue: { track } },
           { provide: EventEmitter2, useValue: { emit } },
           { provide: ConfigService, useValue: { get: () => '1' } }, // cap of 1/week
+          { provide: STORAGE_PROVIDER, useValue: { upload: storageUpload, delete: storageDelete } },
         ],
       }).compile();
       const capped = moduleRef.get(ListingsService);
@@ -331,6 +382,102 @@ describe('ListingsService', () => {
       dbUpdate.mockReturnValue(updateChain([{ id: 'listing-9' }]));
 
       await expect(service.sweepAbandonedDrafts()).resolves.toBe(1);
+    });
+  });
+
+  describe('uploadImages', () => {
+    const file = { buffer: Buffer.from('fake-jpeg-bytes'), filename: 'photo.jpg', mimetype: 'image/jpeg' };
+
+    it('throws NotFoundException for a listing that does not exist', async () => {
+      dbSelect.mockReturnValueOnce(selectChain([])); // ownership lookup: no row
+
+      await expect(service.uploadImages('listing-1', 'user-1', [file])).rejects.toThrow(
+        NotFoundException,
+      );
+      expect(storageUpload).not.toHaveBeenCalled();
+    });
+
+    it('throws ForbiddenException for a listing owned by someone else', async () => {
+      dbSelect.mockReturnValueOnce(selectChain([{ authorId: 'someone-else', status: 'ACTIVE' }]));
+
+      await expect(service.uploadImages('listing-1', 'user-1', [file])).rejects.toThrow(
+        ForbiddenException,
+      );
+      expect(storageUpload).not.toHaveBeenCalled();
+    });
+
+    it('rejects a disallowed file type before touching storage', async () => {
+      dbSelect.mockReturnValueOnce(selectChain([{ authorId: 'user-1', status: 'ACTIVE' }]));
+      const badFile = { ...file, mimetype: 'application/pdf' };
+
+      await expect(service.uploadImages('listing-1', 'user-1', [badFile])).rejects.toMatchObject({
+        response: expect.objectContaining({ errorCode: 'INVALID_IMAGE_TYPE' }),
+      });
+      expect(storageUpload).not.toHaveBeenCalled();
+    });
+
+    it('rejects once the listing already has the maximum number of photos', async () => {
+      dbSelect
+        .mockReturnValueOnce(selectChain([{ authorId: 'user-1', status: 'ACTIVE' }])) // ownership
+        .mockReturnValueOnce(selectChain([{ count: MAX_LISTING_IMAGES }])); // countImages
+
+      await expect(service.uploadImages('listing-1', 'user-1', [file])).rejects.toMatchObject({
+        response: expect.objectContaining({ errorCode: 'TOO_MANY_IMAGES' }),
+      });
+      expect(storageUpload).not.toHaveBeenCalled();
+    });
+
+    it('uploads to storage and inserts a row per file, positioned after existing images', async () => {
+      dbSelect
+        .mockReturnValueOnce(selectChain([{ authorId: 'user-1', status: 'ACTIVE' }])) // ownership
+        .mockReturnValueOnce(selectChain([{ count: 2 }])); // countImages: 2 already exist
+      dbInsert.mockReturnValueOnce(
+        insertChain([{ id: 'img-1', url: 'https://cdn.example/file-1.jpg', position: 2 }]),
+      );
+
+      const result = await service.uploadImages('listing-1', 'user-1', [file]);
+
+      expect(storageUpload).toHaveBeenCalledWith(file);
+      expect(result).toEqual([{ id: 'img-1', url: 'https://cdn.example/file-1.jpg', position: 2 }]);
+    });
+  });
+
+  describe('deleteImage', () => {
+    it('throws NotFoundException for a listing that does not exist', async () => {
+      dbSelect.mockReturnValueOnce(selectChain([]));
+
+      await expect(service.deleteImage('listing-1', 'img-1', 'user-1')).rejects.toThrow(
+        NotFoundException,
+      );
+      expect(storageDelete).not.toHaveBeenCalled();
+    });
+
+    it('throws ForbiddenException for a listing owned by someone else', async () => {
+      dbSelect.mockReturnValueOnce(selectChain([{ authorId: 'someone-else', status: 'ACTIVE' }]));
+
+      await expect(service.deleteImage('listing-1', 'img-1', 'user-1')).rejects.toThrow(
+        ForbiddenException,
+      );
+      expect(storageDelete).not.toHaveBeenCalled();
+    });
+
+    it('throws NotFoundException when the image row does not belong to this listing', async () => {
+      dbSelect.mockReturnValueOnce(selectChain([{ authorId: 'user-1', status: 'ACTIVE' }]));
+      dbDelete.mockReturnValueOnce(deleteChain([])); // no row matched
+
+      await expect(service.deleteImage('listing-1', 'img-1', 'user-1')).rejects.toMatchObject({
+        response: expect.objectContaining({ errorCode: 'IMAGE_NOT_FOUND' }),
+      });
+      expect(storageDelete).not.toHaveBeenCalled();
+    });
+
+    it('deletes the row then the storage object, in that order', async () => {
+      dbSelect.mockReturnValueOnce(selectChain([{ authorId: 'user-1', status: 'ACTIVE' }]));
+      dbDelete.mockReturnValueOnce(deleteChain([{ id: 'img-1', key: 'file-1.jpg' }]));
+
+      await service.deleteImage('listing-1', 'img-1', 'user-1');
+
+      expect(storageDelete).toHaveBeenCalledWith('file-1.jpg');
     });
   });
 });

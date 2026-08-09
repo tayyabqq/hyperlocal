@@ -1,12 +1,27 @@
-import { Body, Controller, Get, Param, ParseUUIDPipe, Post, Query, UseGuards } from '@nestjs/common';
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  ParseUUIDPipe,
+  Post,
+  Query,
+  UploadedFiles,
+  UseGuards,
+  UseInterceptors,
+} from '@nestjs/common';
+import { FilesInterceptor } from '@nestjs/platform-express';
 import { Throttle } from '@nestjs/throttler';
 import type {
   BrowseListingsResult,
   CreateListingResult,
+  ListingImage,
   ListingSummary,
   PaymentOrderSummary,
 } from '@hl/shared';
-import { UserRole } from '@hl/shared';
+import { ErrorCode, MAX_IMAGE_SIZE_BYTES, MAX_LISTING_IMAGES, UserRole } from '@hl/shared';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import type { AuthenticatedUser } from '../auth/strategies/jwt.strategy';
@@ -55,6 +70,42 @@ export class ListingsController {
     @Param('id', ParseUUIDPipe) id: string,
   ): Promise<PaymentOrderSummary> {
     return this.listings.startPaymentRetry(id, toAuthor(user));
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 30, ttl: 3_600_000 } })
+  @Post(':id/images')
+  @UseInterceptors(
+    FilesInterceptor('images', MAX_LISTING_IMAGES, {
+      limits: { fileSize: MAX_IMAGE_SIZE_BYTES },
+    }),
+  )
+  uploadImages(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @UploadedFiles() files: Express.Multer.File[],
+  ): Promise<ListingImage[]> {
+    if (!files || files.length === 0) {
+      throw new BadRequestException({
+        errorCode: ErrorCode.VALIDATION_FAILED,
+        message: 'At least one image is required.',
+      });
+    }
+    return this.listings.uploadImages(
+      id,
+      user.id,
+      files.map((f) => ({ buffer: f.buffer, filename: f.originalname, mimetype: f.mimetype })),
+    );
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Delete(':id/images/:imageId')
+  deleteImage(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('imageId', ParseUUIDPipe) imageId: string,
+  ): Promise<void> {
+    return this.listings.deleteImage(id, imageId, user.id);
   }
 }
 
