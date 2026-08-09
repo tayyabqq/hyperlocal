@@ -11,6 +11,10 @@ coverage/
 tsconfig.tsbuildinfo
 google-services.json
 GoogleService-Info.plist
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
 apps/api/uploads/
 .claude/settings.local.json
 keys-dev/
