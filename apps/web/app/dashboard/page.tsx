@@ -11,6 +11,7 @@ import { useAuth } from '@/context/AuthContext';
 import { ErrorNotice } from '@/components/ErrorNotice';
 import { FullPageSpinner } from '@/components/Spinner';
 import { ProximityMark } from '@/components/ProximityMark';
+import { ListingImagesEditor } from '@/components/ListingImagesEditor';
 
 const STATUS_LABEL: Record<string, string> = {
   [ListingStatus.PENDING_PAYMENT]: 'Awaiting payment',
@@ -58,6 +59,12 @@ export default function DashboardPage() {
       setError('Could not load your listings. Reload the page to try again.');
     }
   }, [accessToken]);
+
+  const updateListingImages = useCallback((listingId: string, images: ListingSummary['images']) => {
+    setListings((prev) =>
+      prev?.map((l) => (l.id === listingId ? { ...l, images } : l)) ?? prev,
+    );
+  }, []);
 
   useEffect(() => {
     if (status === 'unauthenticated') router.replace('/login');
@@ -215,6 +222,15 @@ export default function DashboardPage() {
                         ? 'Working…'
                         : `Pay ${formatAed(LISTING_FEE_FILS)} to publish`}
                     </button>
+                  )}
+
+                  {accessToken && listing.status !== ListingStatus.REMOVED && (
+                    <ListingImagesEditor
+                      listingId={listing.id}
+                      accessToken={accessToken}
+                      images={listing.images}
+                      onChange={(images) => updateListingImages(listing.id, images)}
+                    />
                   )}
                 </li>
               );

@@ -161,7 +161,7 @@ export interface ListingSummary {
   /** Null until activation — the 7-day clock starts when the listing goes live. */
   expiresAt: string | null;
   /** Ordered, lowest position first. Empty for a listing with no photos yet. */
-  images: string[];
+  images: ListingImage[];
 }
 
 /** Limits enforced server-side (Multer config + the images endpoint), not just in the UI. */

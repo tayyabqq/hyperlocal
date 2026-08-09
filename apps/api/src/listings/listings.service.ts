@@ -45,9 +45,16 @@ import {
 } from '../common/storage/storage-provider.interface';
 import type { CreateListingDto } from './dto/create-listing.dto';
 
-/** Reused by every read query (browse, mine, detail) to attach ordered image URLs in one round trip. */
-const IMAGE_URLS_SUBQUERY = sql`(
-  SELECT COALESCE(array_agg(li.url ORDER BY li.position), ARRAY[]::text[])
+/**
+ * Reused by every read query (browse, mine, detail) to attach ordered images
+ * in one round trip. Objects, not bare URLs — the dashboard's delete button
+ * needs each image's id, not just where to render it.
+ */
+const IMAGES_SUBQUERY = sql`(
+  SELECT COALESCE(
+    json_agg(json_build_object('id', li.id, 'url', li.url, 'position', li.position) ORDER BY li.position),
+    '[]'::json
+  )
   FROM listing_images li WHERE li.listing_id = l.id
 )`;
 
@@ -94,7 +101,7 @@ interface ListingQueryRow {
   activatedAt: string | Date | null;
   expiresAt: string | Date | null;
   distanceMeters: number | null;
-  imageUrls: string[] | null;
+  images: ListingImage[] | null;
 }
 
 /** Timestamps come back from raw SQL as strings; the query builder gives Dates. Handle both. */
@@ -329,7 +336,7 @@ export class ListingsService {
         l.status, l.created_at AS "createdAt", l.activated_at AS "activatedAt",
         l.expires_at AS "expiresAt",
         ST_Distance(l.location, ST_SetSRID(ST_MakePoint(${longitude}, ${latitude}), 4326)::geography) AS "distanceMeters",
-        ${IMAGE_URLS_SUBQUERY} AS "imageUrls"
+        ${IMAGES_SUBQUERY} AS "images"
       FROM ${listings} l
       JOIN ${users} u ON u.id = l.author_id
       WHERE l.status = 'ACTIVE'
@@ -361,7 +368,7 @@ export class ListingsService {
         l.latitude, l.longitude, l.location_label AS "locationLabel",
         l.status, l.created_at AS "createdAt", l.activated_at AS "activatedAt",
         l.expires_at AS "expiresAt", NULL AS "distanceMeters",
-        ${IMAGE_URLS_SUBQUERY} AS "imageUrls"
+        ${IMAGES_SUBQUERY} AS "images"
       FROM ${listings} l
       JOIN ${users} u ON u.id = l.author_id
       WHERE l.author_id = ${authorId} AND l.status <> 'REMOVED'
@@ -389,7 +396,7 @@ export class ListingsService {
         l.status, l.created_at AS "createdAt", l.activated_at AS "activatedAt",
         l.expires_at AS "expiresAt",
         ${distanceExpr} AS "distanceMeters",
-        ${IMAGE_URLS_SUBQUERY} AS "imageUrls"
+        ${IMAGES_SUBQUERY} AS "images"
       FROM ${listings} l
       JOIN ${users} u ON u.id = l.author_id
       WHERE l.id = ${id}
@@ -583,7 +590,7 @@ export class ListingsService {
       createdAt: toIso(row.createdAt) as string,
       activatedAt: toIso(row.activatedAt),
       expiresAt: toIso(row.expiresAt),
-      images: row.imageUrls ?? [],
+      images: row.images ?? [],
     };
   }
 }

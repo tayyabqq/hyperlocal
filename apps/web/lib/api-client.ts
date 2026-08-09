@@ -59,6 +59,36 @@ export async function apiFetch<T>(
   return body as T;
 }
 
+async function doUpload(path: string, accessToken: string, formData: FormData): Promise<Response> {
+  // No Content-Type here deliberately: the browser must set its own
+  // multipart boundary, which it can only do if this key is left unset.
+  return fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}${path}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}` },
+    body: formData,
+  });
+}
+
+/** Multipart upload with the same transparent 401-retry as apiFetch. */
+export async function apiUpload<T>(
+  path: string,
+  accessToken: string,
+  formData: FormData,
+): Promise<T> {
+  let res = await doUpload(path, accessToken, formData);
+
+  if (res.status === 401 && refreshHandler) {
+    const fresh = await refreshHandler();
+    if (fresh) res = await doUpload(path, fresh, formData);
+  }
+
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new ApiError(firstMessage(body), res.status, body.errorCode ?? 'INTERNAL');
+  }
+  return body as T;
+}
+
 /** Calls our own Route Handlers, which hold the refresh cookie. */
 export async function routeFetch<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(path, {

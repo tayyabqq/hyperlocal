@@ -2,9 +2,10 @@ import type {
   BrowseListingsResult,
   CreateListingRequest,
   CreateListingResult,
+  ListingImage,
   ListingSummary,
 } from '@hl/shared';
-import { apiFetch } from './api-client';
+import { apiFetch, apiUpload } from './api-client';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL;
 
@@ -46,4 +47,25 @@ export function createListing(
 /** The caller's own listings, including unpaid drafts they can still complete. */
 export function fetchMyListings(accessToken: string): Promise<ListingSummary[]> {
   return apiFetch<ListingSummary[]>('/v1/listings/mine', accessToken);
+}
+
+/** Owner-only. Server enforces type/size/count limits regardless of what the UI already checked. */
+export function uploadListingImages(
+  listingId: string,
+  accessToken: string,
+  files: File[],
+): Promise<ListingImage[]> {
+  const formData = new FormData();
+  for (const file of files) formData.append('images', file);
+  return apiUpload<ListingImage[]>(`/v1/listings/${listingId}/images`, accessToken, formData);
+}
+
+export function deleteListingImage(
+  listingId: string,
+  imageId: string,
+  accessToken: string,
+): Promise<void> {
+  return apiFetch<void>(`/v1/listings/${listingId}/images/${imageId}`, accessToken, {
+    method: 'DELETE',
+  });
 }
