@@ -252,6 +252,32 @@ describe('PaymentsService', () => {
       expect(emit).not.toHaveBeenCalled();
     });
 
+    it('marks the order for manual refund instead of crashing when a second order for the same listing already settled', async () => {
+      parseCallback.mockReturnValueOnce({
+        cartId: 'HL-listing-1-abcd',
+        providerRef: 'TST123',
+        amountFils: LISTING_FEE_FILS,
+        currency: 'AED',
+        settled: true,
+        failureReason: null,
+        eventId: 'TST123:A',
+      });
+      dbInsert.mockReturnValueOnce(insertChain([{ id: 'evt-1' }]));
+      dbSelect.mockReturnValueOnce(selectChain([orderRow()]));
+      // First update attempt hits payment_orders_one_paid_per_listing_idx.
+      const uniqueViolation = Object.assign(new Error('duplicate key value'), { code: '23505' });
+      dbUpdate
+        .mockReturnValueOnce({
+          set: () => ({ where: () => ({ returning: () => Promise.reject(uniqueViolation) }) }),
+        })
+        .mockReturnValueOnce(updateChain([])); // the FAILED-marking update that follows
+
+      await expect(service.handleGatewayCallback(body, 'sig')).resolves.toBeUndefined();
+
+      expect(emit).not.toHaveBeenCalled();
+      expect(dbUpdate).toHaveBeenCalledTimes(2);
+    });
+
     it('records a decline without settling', async () => {
       parseCallback.mockReturnValueOnce({
         cartId: 'HL-listing-1-abcd',

@@ -19,6 +19,7 @@ import {
 } from '@hl/shared';
 import { DB, type Database } from '../db/db.module';
 import { paymentOrders, webhookEvents, type PaymentOrderRow } from '../db/schema';
+import { captureException } from '../observability/sentry';
 import { AnalyticsService } from '../analytics/analytics.service';
 import type {
   ListingCharge,
@@ -248,13 +249,42 @@ export class PaymentsService implements ListingPaymentPort {
    * Moves a PENDING order to PAID. The `status = 'PENDING'` predicate makes
    * this a compare-and-set: concurrent callbacks race, exactly one wins, and
    * the loser emits nothing.
+   *
+   * A second, independent order for the same listing (the user opened two
+   * hosted payment sessions and paid both — e.g. an abandoned tab retried
+   * later) can still reach this point after the listing is already active.
+   * The DB's `payment_orders_one_paid_per_listing_idx` partial unique index
+   * is the actual backstop: it rejects the second UPDATE outright. That is
+   * real money already captured by the gateway with nowhere to go, so it is
+   * marked for manual refund and surfaced to Sentry rather than crashing the
+   * webhook handler.
    */
   private async settle(order: PaymentOrderRow, providerRef: string): Promise<void> {
-    const [updated] = await this.db
-      .update(paymentOrders)
-      .set({ status: 'PAID', paidAt: new Date(), providerRef })
-      .where(and(eq(paymentOrders.id, order.id), eq(paymentOrders.status, 'PENDING')))
-      .returning();
+    let updated: PaymentOrderRow | undefined;
+    try {
+      [updated] = await this.db
+        .update(paymentOrders)
+        .set({ status: 'PAID', paidAt: new Date(), providerRef })
+        .where(and(eq(paymentOrders.id, order.id), eq(paymentOrders.status, 'PENDING')))
+        .returning();
+    } catch (error) {
+      if (isUniqueViolation(error)) {
+        await this.db
+          .update(paymentOrders)
+          .set({
+            status: 'FAILED',
+            failureReason: 'duplicate_settlement_needs_manual_refund',
+          })
+          .where(and(eq(paymentOrders.id, order.id), eq(paymentOrders.status, 'PENDING')));
+        this.logger.error(
+          `Order ${order.id} for listing ${order.listingId} was paid but the listing already ` +
+            `has a settled order. Money was captured by the gateway; a manual refund is required.`,
+        );
+        captureException(error);
+        return;
+      }
+      throw error;
+    }
 
     if (!updated) {
       this.logger.log(`Order ${order.id} was already settled; nothing to do.`);
@@ -296,6 +326,11 @@ export class PaymentsService implements ListingPaymentPort {
       amountFils: order.amountFils,
     } satisfies PaymentSettledEvent);
   }
+}
+
+/** Postgres unique_violation (23505) — the only constraint this UPDATE can hit. */
+function isUniqueViolation(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && (error as { code?: string }).code === '23505';
 }
 
 function toSummary(order: PaymentOrderRow): PaymentOrderSummary {
