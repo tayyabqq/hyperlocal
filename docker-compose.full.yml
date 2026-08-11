@@ -52,7 +52,8 @@ services:
       OTP_PROVIDER: whatsapp
       WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID:-changeme}
       WHATSAPP_ACCESS_TOKEN: ${WHATSAPP_ACCESS_TOKEN:-changeme}
-      WHATSAPP_OTP_TEMPLATE_NAME: otp_login
+      WHATSAPP_AUTH_TEMPLATE_NAME: otp_login
+      WHATSAPP_TEMPLATE_LANGUAGE: en_US
       PAYMENT_GATEWAY: paytabs
       PAYMENT_RETURN_URL: http://localhost:3001/listings/pending
       PAYMENT_CALLBACK_URL: http://localhost:3000/v1/payments/callback

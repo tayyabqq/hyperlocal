@@ -22,6 +22,9 @@ class Env {
   @IsString()
   JWT_PUBLIC_KEY!: string;
 
+  // This is the "WHATSAPP_PROVIDER" switch: OTP is the only channel it
+  // currently delivers, so one variable covers both provider selection and
+  // the OTP channel. A second, WhatsApp-specific toggle would just duplicate it.
   @IsIn(['console', 'whatsapp'])
   OTP_PROVIDER!: string;
 
@@ -33,9 +36,25 @@ class Env {
   @IsString()
   WHATSAPP_ACCESS_TOKEN?: string;
 
+  /** Must be an approved template in Meta's AUTHENTICATION category — see docs/DEPLOYMENT.md. */
   @IsOptional()
   @IsString()
-  WHATSAPP_OTP_TEMPLATE_NAME?: string;
+  WHATSAPP_AUTH_TEMPLATE_NAME?: string;
+
+  /** Meta locale code, e.g. en_US. Defaults to en_US in the provider if unset. */
+  @IsOptional()
+  @IsString()
+  WHATSAPP_TEMPLATE_LANGUAGE?: string;
+
+  /**
+   * Not required to send messages (the Cloud API sends are addressed by
+   * WHATSAPP_PHONE_NUMBER_ID alone) — only needed if you later call the
+   * Business Manager API to manage templates programmatically. Recorded here
+   * for ops reference, not read by the provider.
+   */
+  @IsOptional()
+  @IsString()
+  WHATSAPP_BUSINESS_ACCOUNT_ID?: string;
 
   @IsOptional()
   @IsString()
@@ -138,7 +157,7 @@ export function validateEnv(raw: Record<string, unknown>): Env {
   }
   if (parsed.OTP_PROVIDER === 'whatsapp') {
     const missing = (
-      ['WHATSAPP_PHONE_NUMBER_ID', 'WHATSAPP_ACCESS_TOKEN', 'WHATSAPP_OTP_TEMPLATE_NAME'] as const
+      ['WHATSAPP_PHONE_NUMBER_ID', 'WHATSAPP_ACCESS_TOKEN', 'WHATSAPP_AUTH_TEMPLATE_NAME'] as const
     ).filter((k) => !parsed[k]);
     if (missing.length > 0) {
       throw new Error(`OTP_PROVIDER=whatsapp requires: ${missing.join(', ')}`);
