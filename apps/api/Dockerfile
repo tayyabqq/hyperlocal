@@ -16,7 +16,11 @@ COPY apps/api/package.json apps/api/
 # Web/mobile manifests are needed for the workspace lockfile to resolve.
 COPY apps/web/package.json apps/web/
 COPY apps/mobile/package.json apps/mobile/
-RUN npm ci
+# @react-navigation/native declares react-native as a peer dependency; npm's
+# strict peer resolution treats that as a conflict in this monorepo even
+# though it only concerns apps/mobile, never apps/api. Same fix as .npmrc
+# (not copied into this build context) and Vercel's Install Command override.
+RUN npm ci --legacy-peer-deps
 
 # --- build: compile shared + api to dist ---
 FROM deps AS build
@@ -32,7 +36,7 @@ COPY packages/shared/package.json packages/shared/
 COPY apps/api/package.json apps/api/
 COPY apps/web/package.json apps/web/
 COPY apps/mobile/package.json apps/mobile/
-RUN npm ci --omit=dev
+RUN npm ci --omit=dev --legacy-peer-deps
 
 # --- runtime ---
 FROM base AS runtime
