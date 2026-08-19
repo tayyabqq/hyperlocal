@@ -1,13 +1,19 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import type { VerifyOtpResult } from '@hl/shared';
 import { apiBaseUrl, REFRESH_COOKIE, refreshCookieOptions } from '@/lib/server-config';
+import { backendUnavailable } from '@/lib/backend-unavailable';
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
-  const upstream = await fetch(`${apiBaseUrl()}/v1/auth/otp/verify`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(await req.json()),
-  });
+  let upstream: Response;
+  try {
+    upstream = await fetch(`${apiBaseUrl()}/v1/auth/otp/verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(await req.json()),
+    });
+  } catch {
+    return backendUnavailable();
+  }
 
   const body = await upstream.json();
   if (!upstream.ok) return NextResponse.json(body, { status: upstream.status });
